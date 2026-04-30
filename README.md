@@ -1,4 +1,8 @@
-# EasyEnclave
+# EasyEnclave Mini
+
+> **Frozen CPU-only snapshot.** This repo is a one-time fork of [`easyenclave/easyenclave`](https://github.com/easyenclave/easyenclave) at commit [`238184a`](https://github.com/easyenclave/easyenclave/commit/238184a) — the state of `main` immediately before [PR #91](https://github.com/easyenclave/easyenclave/pull/91) introduced the NVIDIA driver / CUDA / vLLM stack and the `dm-verity-squashfs` root strategy. Active development continues at the parent repo. Use this fork if you want a smaller, CPU-only TDX runtime without the GPU dependencies.
+
+---
 
 Generic enclave runtime for Intel TDX confidential VMs. Runs as PID 1 inside a sealed VM and exposes a unix socket API for workload management.
 
