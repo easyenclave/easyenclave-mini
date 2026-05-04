@@ -171,10 +171,58 @@ jobs:
       # ── Smoke phase (per-target auth + tools + real TDX test) ───────
       # Gated on fork check so fork PRs don't burn cloud $ / expose
       # the tdx2 SSH key. Fork PRs still get the build above.
+      - id: smoke
+        name: Check smoke configuration
+        env:
+          TARGET: ${{ matrix.target }}
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          EE_LOCAL_HOST: ${{ secrets.EE_LOCAL_HOST }}
+          EE_LOCAL_USER: ${{ vars.EE_LOCAL_USER }}
+          EE_LOCAL_REPO: ${{ vars.EE_LOCAL_REPO }}
+          EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
+        run: |
+          enabled=false
+          reason=""
+          case "$TARGET" in
+            azure)
+              if [ -n "$AZURE_CREDENTIALS" ] && [ -n "$AZURE_RESOURCE_GROUP" ]; then
+                enabled=true
+              else
+                reason="missing AZURE_CREDENTIALS and/or AZURE_RESOURCE_GROUP"
+              fi
+              ;;
+            gcp)
+              if [ -n "$GCP_PROJECT" ] && [ -n "$GCS_BUCKET" ]; then
+                enabled=true
+              else
+                reason="missing GCP_PROJECT_ID and/or GCS_BUCKET"
+              fi
+              ;;
+            local-tdx-qcow2)
+              if [ -n "$EE_LOCAL_HOST" ] && [ -n "$EE_LOCAL_SSH_KEY" ]; then
+                enabled=true
+              else
+                reason="missing EE_LOCAL_HOST and/or EE_LOCAL_SSH_KEY"
+              fi
+              ;;
+            *)
+              reason="unknown target"
+              ;;
+          esac
+          echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" != true ]; then
+            echo "::warning::Skipping ${TARGET} smoke: ${reason}"
+          fi
+
       - if: >-
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
              && matrix.target == 'gcp'
+             && steps.smoke.outputs.enabled == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
@@ -183,12 +231,14 @@ jobs:
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
              && matrix.target == 'gcp'
+             && steps.smoke.outputs.enabled == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       - if: >-
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
              && matrix.target == 'azure'
+             && steps.smoke.outputs.enabled == 'true'
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
@@ -196,6 +246,7 @@ jobs:
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
              && matrix.target == 'azure'
+             && steps.smoke.outputs.enabled == 'true'
         name: Install AzCopy
         run: |
           curl -fsSL https://aka.ms/downloadazcopy-v10-linux | tar -xz
@@ -206,6 +257,7 @@ jobs:
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
              && matrix.target == 'local-tdx-qcow2'
+             && steps.smoke.outputs.enabled == 'true'
         name: Stage SSH key for tdx2
         env:
           EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
@@ -216,8 +268,9 @@ jobs:
           echo "EE_LOCAL_SSH_KEY_PATH=$HOME/.ssh/tdx2_key" >> "$GITHUB_ENV"
 
       - if: >-
-          github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+             && steps.smoke.outputs.enabled == 'true'
         name: Real-TDX smoke (${{ matrix.target }})
         env:
           SHA12: ${{ needs.meta.outputs.sha12 }}
@@ -226,6 +279,9 @@ jobs:
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
           EE_LOCAL_HOST: ${{ secrets.EE_LOCAL_HOST }}
+          EE_LOCAL_USER: ${{ vars.EE_LOCAL_USER }}
+          EE_LOCAL_REPO: ${{ vars.EE_LOCAL_REPO }}
+          EE_LOCAL_REPO_URL: ${{ vars.EE_LOCAL_REPO_URL }}
         run: bash image/ci-tdx-smoke-${{ matrix.target }}.sh
 
   # ── GCP image promotion (publishes staging / stable family) ─────────
@@ -242,17 +298,38 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
+      - id: promote
+        name: Check GCP promotion configuration
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+        run: |
+          enabled=false
+          reason=""
+          if [ -n "$GCP_PROJECT" ] && [ -n "$GCS_BUCKET" ]; then
+            enabled=true
+          else
+            reason="missing GCP_PROJECT_ID and/or GCS_BUCKET"
+          fi
+          echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" != true ]; then
+            echo "::warning::Skipping GCP promotion: ${reason}"
+          fi
+      - if: steps.promote.outputs.enabled == 'true'
+        uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
           service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
-      - uses: google-github-actions/setup-gcloud@v2
+      - if: steps.promote.outputs.enabled == 'true'
+        uses: google-github-actions/setup-gcloud@v2
       - uses: actions/download-artifact@v4
         with:
           name: easyenclave-image-gcp
           path: image/output/gcp
 
-      - name: Upload + create promoted image
+      - if: steps.promote.outputs.enabled == 'true'
+        name: Upload + create promoted image
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
@@ -278,7 +355,8 @@ jobs:
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
 
-      - name: Rotate old promoted images
+      - if: steps.promote.outputs.enabled == 'true'
+        name: Rotate old promoted images
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
