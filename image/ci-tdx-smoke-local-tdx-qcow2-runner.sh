@@ -5,7 +5,7 @@
 # label init template finds root on the attached virtio-blk disk.
 #
 # Args:
-#   $1  path to easyenclave-*-local-tdx-qcow2.qcow2 on this host
+#   $1  path to easyenclave-mini-*-local-tdx-qcow2.qcow2 on this host
 #   $2  commit sha12 (for logging)
 set -euo pipefail
 
