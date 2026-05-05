@@ -23,7 +23,7 @@ set -euo pipefail
 
 ZONE="${GCP_ZONE:-us-central1-c}"
 MACHINE_TYPE="${GCP_MACHINE_TYPE:-c3-standard-4}"
-TARBALL="easyenclave-${SHA12}-gcp.tar.gz"
+TARBALL="easyenclave-mini-${SHA12}-gcp.tar.gz"
 GCS_URI="gs://${GCS_BUCKET}/ephemeral-${SHA12}/${TARBALL}"
 IMAGE_NAME="ee-smoke-${SHA12}"
 VM_NAME="ee-smoke-$(date +%s)"

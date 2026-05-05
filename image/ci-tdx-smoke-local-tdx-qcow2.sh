@@ -30,7 +30,7 @@ set -euo pipefail
 : "${EE_LOCAL_SSH_KEY_PATH:?}"
 EE_LOCAL_REPO="${EE_LOCAL_REPO:-/home/${EE_LOCAL_USER}/src/easyenclave}"
 
-QCOW2="image/output/local-tdx-qcow2/easyenclave-${SHA12}-local-tdx-qcow2.qcow2"
+QCOW2="image/output/local-tdx-qcow2/easyenclave-mini-${SHA12}-local-tdx-qcow2.qcow2"
 [ -f "$QCOW2" ] || { echo "missing $QCOW2" >&2; exit 2; }
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$EE_LOCAL_SSH_KEY_PATH")

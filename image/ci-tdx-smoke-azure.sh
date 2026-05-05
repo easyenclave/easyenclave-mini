@@ -53,7 +53,7 @@ REGION="${AZURE_REGION:-westus3}"
 VM_SIZE="${AZURE_VM_SIZE:-Standard_DC2es_v6}"
 STORAGE_REGION="$(az group show --name "$AZURE_RESOURCE_GROUP" --query location -o tsv)"
 [ -n "$STORAGE_REGION" ] || { echo "::error::smoke:azure: couldn't resolve RG location" >&2; exit 1; }
-VHD="image/output/azure/easyenclave-${SHA12}-azure.vhd"
+VHD="image/output/azure/easyenclave-mini-${SHA12}-azure.vhd"
 [ -f "$VHD" ] || { echo "missing $VHD" >&2; exit 2; }
 
 STAMP=$(date +%s)
@@ -68,7 +68,7 @@ VNET_NAME="${PREFIX}-vnet"
 # (the RG's location) so Azure's internal staging pipeline is happy.
 # Only the image VERSION is per-run and torn down after the test.
 GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery}"
-IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-x64}"
+IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-mini-x64}"
 IMG_VERSION="0.0.$(date +%s)"
 
 # Storage account for staging the VHD as a page blob. Pinned to
@@ -140,7 +140,7 @@ if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
         --os-type Linux --os-state Generalized \
         --hyper-v-generation V2 \
         --features SecurityType=ConfidentialVmSupported \
-        --publisher easyenclave --offer easyenclave --sku linux-x64 >/dev/null
+        --publisher easyenclave --offer easyenclave-mini --sku linux-x64 >/dev/null
 fi
 
 # ── Upload VHD to a storage-account page blob ──────────────────────

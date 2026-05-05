@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: easyenclave-image-${{ github.ref }}
+  group: easyenclave-mini-image-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -48,12 +48,12 @@ jobs:
           SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            GCP_NAME="easyenclave-${TAG//./-}"
-            RELEASE_NAME="easyenclave-${TAG}"
+            GCP_NAME="easyenclave-mini-${TAG//./-}"
+            RELEASE_NAME="easyenclave-mini-${TAG}"
           else
             TAG=""
-            GCP_NAME="easyenclave-${SHA12}"
-            RELEASE_NAME="easyenclave-${SHA12}"
+            GCP_NAME="easyenclave-mini-${SHA12}"
+            RELEASE_NAME="easyenclave-mini-${SHA12}"
           fi
           {
             echo "sha12=${SHA12}"
@@ -73,6 +73,7 @@ jobs:
   # so a smoke failure is debuggable from the artifact.
   build-and-smoke:
     needs: meta
+    name: build-and-smoke (${{ matrix.target }})
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -86,26 +87,27 @@ jobs:
         # local-tdx-qcow2  : GPT-disk qcow2, libvirt backing-file shape
         #                    (`devopsdefender/dd`), boots on EE_LOCAL_HOST under
         #                    real OVMF.inteltdx.fd
-        target: [gcp, azure, local-tdx-qcow2]
+        include:
+          - target: gcp
+            kernel_meta: linux-image-gcp
+            kernel_flavor: gcp
+          - target: azure
+            kernel_meta: linux-image-azure
+            kernel_flavor: azure
+          - target: local-tdx-qcow2
+            kernel_meta: linux-image-generic
+            kernel_flavor: generic
     steps:
       - uses: actions/checkout@v4
 
       # ── Build phase ─────────────────────────────────────────────────
       - name: Install apt build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
-            busybox-static e2fsprogs dosfstools qemu-utils \
-            zstd linux-image-generic
-
-      - name: Resolve target kernel version
-        id: kver
-        run: |
-          KVER=$(ls -1 /boot/vmlinuz-*-generic 2>/dev/null \
-            | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
-          [ -z "$KVER" ] && KVER=$(uname -r)
-          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+        id: deps
+        timeout-minutes: 10
+        env:
+          KERNEL_META: ${{ matrix.kernel_meta }}
+          KERNEL_FLAVOR: ${{ matrix.kernel_flavor }}
+        run: bash image/ci-install-build-deps.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -121,7 +123,7 @@ jobs:
 
       - name: Build (TARGET=${{ matrix.target }})
         env:
-          KVER: ${{ steps.kver.outputs.kver }}
+          KVER: ${{ steps.deps.outputs.kver }}
           TARGET: ${{ matrix.target }}
         run: |
           cargo build --release
@@ -131,40 +133,14 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           SHA12: ${{ needs.meta.outputs.sha12 }}
-        run: |
-          cd image/output/${TARGET}
-          UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
-          mv easyenclave.efi "easyenclave-${SHA12}-${TARGET}.efi"
-          {
-            echo "commit: ${{ github.sha }}"
-            echo "target: ${TARGET}"
-            echo "UKI sha256: ${UKI_SHA256}"
-          } > MEASUREMENTS.txt
-          if [ -f easyenclave.root.raw ]; then
-            RAW_SHA=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
-            mv easyenclave.root.raw "easyenclave-${SHA12}-${TARGET}.raw"
-            echo "Disk sha256: ${RAW_SHA}" >> MEASUREMENTS.txt
-          fi
-          if [ -f easyenclave.qcow2 ]; then
-            QCOW_SHA=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
-            mv easyenclave.qcow2 "easyenclave-${SHA12}-${TARGET}.qcow2"
-            echo "Qcow2 sha256: ${QCOW_SHA}" >> MEASUREMENTS.txt
-          fi
-          if [ -f easyenclave-gcp.tar.gz ]; then
-            mv easyenclave-gcp.tar.gz "easyenclave-${SHA12}-gcp.tar.gz"
-          fi
-          if [ -f easyenclave.vhd ]; then
-            VHD_SHA=$(sha256sum easyenclave.vhd | cut -d' ' -f1)
-            mv easyenclave.vhd "easyenclave-${SHA12}-${TARGET}.vhd"
-            echo "VHD sha256: ${VHD_SHA}" >> MEASUREMENTS.txt
-          fi
-          ls -la
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash image/ci-stage-artifacts.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easyenclave-image-${{ matrix.target }}
+          name: easyenclave-mini-image-${{ matrix.target }}
           path: |
-            image/output/${{ matrix.target }}/easyenclave-*
+            image/output/${{ matrix.target }}/easyenclave-mini-*
             image/output/${{ matrix.target }}/MEASUREMENTS.txt
           retention-days: 7
 
@@ -325,7 +301,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
       - uses: actions/download-artifact@v4
         with:
-          name: easyenclave-image-gcp
+          name: easyenclave-mini-image-gcp
           path: image/output/gcp
 
       - if: steps.promote.outputs.enabled == 'true'
@@ -336,15 +312,15 @@ jobs:
           SHA12: ${{ needs.meta.outputs.sha12 }}
           GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
         run: |
-          ASSET="easyenclave-${SHA12}-gcp.tar.gz"
+          ASSET="easyenclave-mini-${SHA12}-gcp.tar.gz"
           gcloud storage cp "image/output/gcp/${ASSET}" \
             "gs://${GCS_BUCKET}/${ASSET}"
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            FAMILY="--family=easyenclave-stable"
+            FAMILY="--family=easyenclave-mini-stable"
             CHANNEL="stable"
           else
-            FAMILY="--family=easyenclave-staging"
+            FAMILY="--family=easyenclave-mini-staging"
             CHANNEL="staging"
           fi
 
@@ -353,7 +329,7 @@ jobs:
             --source-uri="gs://${GCS_BUCKET}/${ASSET}" \
             ${FAMILY} \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
-            --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
+            --labels=easyenclave-mini=image,channel=${CHANNEL},commit=${SHA12}
 
       - if: steps.promote.outputs.enabled == 'true'
         name: Rotate old promoted images
@@ -361,7 +337,7 @@ jobs:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           gcloud compute images list --project="${GCP_PROJECT}" \
-            --filter="labels.easyenclave=image AND labels.channel=staging" \
+            --filter="labels.easyenclave-mini=image AND labels.channel=staging" \
             --format="value(name)" --sort-by="~creationTimestamp" \
             | tail -n +6 \
             | xargs -rI{} gcloud compute images delete {} \
@@ -380,7 +356,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: release-stage
-          pattern: easyenclave-image-*
+          pattern: easyenclave-mini-image-*
 
       - name: Stage release assets
         env:
@@ -388,9 +364,9 @@ jobs:
         run: |
           mkdir -p release-out
           cd release-stage
-          for target_dir in easyenclave-image-*; do
-            target="${target_dir#easyenclave-image-}"
-            for f in "${target_dir}"/easyenclave-*; do
+          for target_dir in easyenclave-mini-image-*; do
+            target="${target_dir#easyenclave-mini-image-}"
+            for f in "${target_dir}"/easyenclave-mini-*; do
               [ -f "$f" ] || continue
               cp "$f" ../release-out/
             done
@@ -412,7 +388,7 @@ jobs:
             GH_TAG="$TAG"
             PRERELEASE=""
           else
-            GH_TAG="image-${SHA12}"
+            GH_TAG="mini-image-${SHA12}"
             PRERELEASE="--prerelease"
           fi
 
