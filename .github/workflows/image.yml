@@ -97,16 +97,33 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           case "$TARGET" in
-            azure) kernel_pkg=linux-image-azure ;;
-            gcp) kernel_pkg=linux-image-gcp ;;
-            local-tdx-qcow2) kernel_pkg=linux-image-generic ;;
+            azure) kernel_meta=linux-image-azure ;;
+            gcp) kernel_meta=linux-image-gcp ;;
+            local-tdx-qcow2) kernel_meta=linux-image-generic ;;
             *) echo "::error::unknown target: $TARGET" >&2; exit 2 ;;
           esac
           sudo apt-get -o Acquire::Retries=5 update
+          kernel_pkgs=$(apt-cache depends --no-recommends "$kernel_meta" \
+            | awk '
+                /Depends:/ {
+                  dep=$2
+                  gsub(/[<>]/, "", dep)
+                  if (dep ~ /^linux-image-[0-9].*-(generic|azure|gcp)$/ ||
+                      dep ~ /^linux-modules-extra-[0-9].*-generic$/) {
+                    print dep
+                  }
+                }' \
+            | sort -u)
+          if [ -z "$kernel_pkgs" ]; then
+            echo "::error::failed to resolve kernel packages from $kernel_meta" >&2
+            apt-cache depends --no-recommends "$kernel_meta" >&2
+            exit 2
+          fi
+          echo "kernel packages: $kernel_pkgs"
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
             busybox-static e2fsprogs dosfstools qemu-utils \
-            zstd "$kernel_pkg"
+            zstd $kernel_pkgs
 
       - name: Resolve target kernel version
         id: kver
