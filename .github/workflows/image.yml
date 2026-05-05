@@ -93,17 +93,33 @@ jobs:
       # ── Build phase ─────────────────────────────────────────────────
       - name: Install apt build dependencies
         timeout-minutes: 10
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
+          case "$TARGET" in
+            azure) kernel_pkg=linux-image-azure ;;
+            gcp) kernel_pkg=linux-image-gcp ;;
+            local-tdx-qcow2) kernel_pkg=linux-image-virtual ;;
+            *) echo "::error::unknown target: $TARGET" >&2; exit 2 ;;
+          esac
           sudo apt-get -o Acquire::Retries=5 update
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
             busybox-static e2fsprogs dosfstools qemu-utils \
-            zstd linux-image-generic
+            zstd "$kernel_pkg"
 
       - name: Resolve target kernel version
         id: kver
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          KVER=$(ls -1 /boot/vmlinuz-*-generic 2>/dev/null \
+          case "$TARGET" in
+            azure) flavor=azure ;;
+            gcp) flavor=gcp ;;
+            local-tdx-qcow2) flavor=generic ;;
+            *) echo "::error::unknown target: $TARGET" >&2; exit 2 ;;
+          esac
+          KVER=$(ls -1 /boot/vmlinuz-*-"$flavor" 2>/dev/null \
             | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
           [ -z "$KVER" ] && KVER=$(uname -r)
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
