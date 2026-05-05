@@ -140,7 +140,7 @@ if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
         --os-type Linux --os-state Generalized \
         --hyper-v-generation V2 \
         --features SecurityType=ConfidentialVmSupported \
-        --publisher easyenclave --offer easyenclave --sku linux-x64 >/dev/null
+        --publisher easyenclave --offer easyenclave-mini --sku linux-x64 >/dev/null
 fi
 
 # ── Upload VHD to a storage-account page blob ──────────────────────
