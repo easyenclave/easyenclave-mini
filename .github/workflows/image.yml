@@ -99,7 +99,7 @@ jobs:
           case "$TARGET" in
             azure) kernel_pkg=linux-image-azure ;;
             gcp) kernel_pkg=linux-image-gcp ;;
-            local-tdx-qcow2) kernel_pkg=linux-image-virtual ;;
+            local-tdx-qcow2) kernel_pkg=linux-image-generic ;;
             *) echo "::error::unknown target: $TARGET" >&2; exit 2 ;;
           esac
           sudo apt-get -o Acquire::Retries=5 update
