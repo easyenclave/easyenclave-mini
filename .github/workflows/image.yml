@@ -86,60 +86,27 @@ jobs:
         # local-tdx-qcow2  : GPT-disk qcow2, libvirt backing-file shape
         #                    (`devopsdefender/dd`), boots on EE_LOCAL_HOST under
         #                    real OVMF.inteltdx.fd
-        target: [gcp, azure, local-tdx-qcow2]
+        include:
+          - target: gcp
+            kernel_meta: linux-image-gcp
+            kernel_flavor: gcp
+          - target: azure
+            kernel_meta: linux-image-azure
+            kernel_flavor: azure
+          - target: local-tdx-qcow2
+            kernel_meta: linux-image-generic
+            kernel_flavor: generic
     steps:
       - uses: actions/checkout@v4
 
       # ── Build phase ─────────────────────────────────────────────────
       - name: Install apt build dependencies
+        id: deps
         timeout-minutes: 10
         env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          case "$TARGET" in
-            azure) kernel_meta=linux-image-azure ;;
-            gcp) kernel_meta=linux-image-gcp ;;
-            local-tdx-qcow2) kernel_meta=linux-image-generic ;;
-            *) echo "::error::unknown target: $TARGET" >&2; exit 2 ;;
-          esac
-          sudo apt-get -o Acquire::Retries=5 update
-          kernel_pkgs=$(apt-cache depends --no-recommends "$kernel_meta" \
-            | awk '
-                /Depends:/ {
-                  dep=$2
-                  gsub(/[<>]/, "", dep)
-                  if (dep ~ /^linux-image-[0-9].*-(generic|azure|gcp)$/ ||
-                      dep ~ /^linux-modules-extra-[0-9].*-generic$/) {
-                    print dep
-                  }
-                }' \
-            | sort -u)
-          if [ -z "$kernel_pkgs" ]; then
-            echo "::error::failed to resolve kernel packages from $kernel_meta" >&2
-            apt-cache depends --no-recommends "$kernel_meta" >&2
-            exit 2
-          fi
-          echo "kernel packages: $kernel_pkgs"
-          sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
-            busybox-static e2fsprogs dosfstools qemu-utils \
-            zstd $kernel_pkgs
-
-      - name: Resolve target kernel version
-        id: kver
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          case "$TARGET" in
-            azure) flavor=azure ;;
-            gcp) flavor=gcp ;;
-            local-tdx-qcow2) flavor=generic ;;
-            *) echo "::error::unknown target: $TARGET" >&2; exit 2 ;;
-          esac
-          KVER=$(ls -1 /boot/vmlinuz-*-"$flavor" 2>/dev/null \
-            | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
-          [ -z "$KVER" ] && KVER=$(uname -r)
-          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          KERNEL_META: ${{ matrix.kernel_meta }}
+          KERNEL_FLAVOR: ${{ matrix.kernel_flavor }}
+        run: bash image/ci-install-build-deps.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -155,7 +122,7 @@ jobs:
 
       - name: Build (TARGET=${{ matrix.target }})
         env:
-          KVER: ${{ steps.kver.outputs.kver }}
+          KVER: ${{ steps.deps.outputs.kver }}
           TARGET: ${{ matrix.target }}
         run: |
           cargo build --release
@@ -165,34 +132,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           SHA12: ${{ needs.meta.outputs.sha12 }}
-        run: |
-          cd image/output/${TARGET}
-          UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
-          mv easyenclave.efi "easyenclave-mini-${SHA12}-${TARGET}.efi"
-          {
-            echo "commit: ${{ github.sha }}"
-            echo "target: ${TARGET}"
-            echo "UKI sha256: ${UKI_SHA256}"
-          } > MEASUREMENTS.txt
-          if [ -f easyenclave.root.raw ]; then
-            RAW_SHA=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
-            mv easyenclave.root.raw "easyenclave-mini-${SHA12}-${TARGET}.raw"
-            echo "Disk sha256: ${RAW_SHA}" >> MEASUREMENTS.txt
-          fi
-          if [ -f easyenclave.qcow2 ]; then
-            QCOW_SHA=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
-            mv easyenclave.qcow2 "easyenclave-mini-${SHA12}-${TARGET}.qcow2"
-            echo "Qcow2 sha256: ${QCOW_SHA}" >> MEASUREMENTS.txt
-          fi
-          if [ -f easyenclave-gcp.tar.gz ]; then
-            mv easyenclave-gcp.tar.gz "easyenclave-mini-${SHA12}-gcp.tar.gz"
-          fi
-          if [ -f easyenclave.vhd ]; then
-            VHD_SHA=$(sha256sum easyenclave.vhd | cut -d' ' -f1)
-            mv easyenclave.vhd "easyenclave-mini-${SHA12}-${TARGET}.vhd"
-            echo "VHD sha256: ${VHD_SHA}" >> MEASUREMENTS.txt
-          fi
-          ls -la
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash image/ci-stage-artifacts.sh
 
       - uses: actions/upload-artifact@v4
         with:
