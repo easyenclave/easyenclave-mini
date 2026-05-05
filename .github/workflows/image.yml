@@ -73,6 +73,7 @@ jobs:
   # so a smoke failure is debuggable from the artifact.
   build-and-smoke:
     needs: meta
+    name: build-and-smoke (${{ matrix.target }})
     runs-on: ubuntu-latest
     environment: release
     permissions:
