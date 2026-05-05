@@ -27,6 +27,7 @@ fi
 OVMF_CODE=""
 for candidate in \
     /usr/local/share/ovmf/OVMF.inteltdx.fd \
+    /usr/share/ovmf/OVMF.fd \
     /usr/share/ovmf/OVMF.tdx.fd \
     /usr/share/ovmf/OVMF.inteltdx.ms.fd \
     /usr/share/tdvf/TDVF.fd \
