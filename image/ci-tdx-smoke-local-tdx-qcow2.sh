@@ -1,9 +1,9 @@
 #!/bin/bash
 # Local-TDX-qcow2 real-TDX integration test — hosted-side driver.
 #
-# GitHub-hosted runners don't have TDX. SSH into tdx2 (real TDX via
-# EE_LOCAL_HOST + EE_LOCAL_SSH_KEY_PATH), scp the qcow2 artifact there,
-# invoke the local runner which boots it under real OVMF.inteltdx.fd +
+# GitHub-hosted runners don't have TDX. SSH into EE_LOCAL_HOST,
+# scp the qcow2 artifact there, invoke the local runner which boots it
+# under real OVMF.inteltdx.fd +
 # kvm_intel.tdx=Y. Mirrors the pattern dd's relaunch-* actions use.
 #
 # Why qcow2 (not ISO): dd's production path is libvirt with qcow2 as a
@@ -13,10 +13,10 @@
 # Required env:
 #   SHA12                    commit sha12 (for artifact name)
 #   GITHUB_SHA               full commit sha (for remote checkout)
-#   EE_LOCAL_HOST            tdx2 hostname or IP
+#   EE_LOCAL_HOST            real TDX hostname or IP
+#   EE_LOCAL_USER            SSH user on EE_LOCAL_HOST
 #   EE_LOCAL_SSH_KEY_PATH    path to the private key file
 # Optional env:
-#   EE_LOCAL_USER            SSH user on EE_LOCAL_HOST (default: tdx2)
 #   EE_LOCAL_REPO            repo checkout path on EE_LOCAL_HOST
 #                            (default: /home/${EE_LOCAL_USER}/src/easyenclave)
 #   EE_LOCAL_REPO_URL        remote URL to fetch before smoke
@@ -26,8 +26,8 @@ set -euo pipefail
 : "${SHA12:?}"
 : "${GITHUB_SHA:?}"
 : "${EE_LOCAL_HOST:?}"
+: "${EE_LOCAL_USER:?}"
 : "${EE_LOCAL_SSH_KEY_PATH:?}"
-EE_LOCAL_USER="${EE_LOCAL_USER:-tdx2}"
 EE_LOCAL_REPO="${EE_LOCAL_REPO:-/home/${EE_LOCAL_USER}/src/easyenclave}"
 
 QCOW2="image/output/local-tdx-qcow2/easyenclave-${SHA12}-local-tdx-qcow2.qcow2"

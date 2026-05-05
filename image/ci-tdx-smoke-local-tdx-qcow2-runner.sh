@@ -1,6 +1,6 @@
 #!/bin/bash
-# Runs on tdx2 via SSH from ci-tdx-smoke-local-tdx-qcow2.sh. Boots the
-# qcow2 under real TDX (kvm_intel.tdx=Y + OVMF.inteltdx.fd + tdx-guest
+# Runs on EE_LOCAL_HOST via SSH from ci-tdx-smoke-local-tdx-qcow2.sh.
+# Boots the qcow2 under real TDX (kvm_intel.tdx=Y + OVMF.inteltdx.fd + tdx-guest
 # object), mirrors dd's libvirt shape but driven by raw qemu. The ext4-
 # label init template finds root on the attached virtio-blk disk.
 #
@@ -12,28 +12,29 @@ set -euo pipefail
 QCOW2="${1:?}"
 SHA12="${2:?}"
 
-[ -f "$QCOW2" ] || { echo "tdx2-smoke: missing qcow2 $QCOW2" >&2; exit 2; }
+[ -f "$QCOW2" ] || { echo "local-tdx-smoke: missing qcow2 $QCOW2" >&2; exit 2; }
 
 for cmd in qemu-system-x86_64 genisoimage curl qemu-img; do
-    command -v "$cmd" >/dev/null || { echo "tdx2-smoke: missing $cmd" >&2; exit 2; }
+    command -v "$cmd" >/dev/null || { echo "local-tdx-smoke: missing $cmd" >&2; exit 2; }
 done
 
 TDX_SUPPORT=$(cat /sys/module/kvm_intel/parameters/tdx 2>/dev/null || echo "N")
 if [ "$TDX_SUPPORT" != "Y" ]; then
-    echo "::error::tdx2-smoke: kvm_intel.tdx=$TDX_SUPPORT — TDX not enabled" >&2
+    echo "::error::local-tdx-smoke: kvm_intel.tdx=$TDX_SUPPORT — TDX not enabled" >&2
     exit 2
 fi
 
 OVMF_CODE=""
 for candidate in \
     /usr/local/share/ovmf/OVMF.inteltdx.fd \
+    /usr/share/ovmf/OVMF.tdx.fd \
     /usr/share/ovmf/OVMF.inteltdx.ms.fd \
     /usr/share/tdvf/TDVF.fd \
     /opt/intel-tdvf/TDVF.fd \
     /usr/share/OVMF/OVMF_CODE_4M.fd; do
     [ -f "$candidate" ] && OVMF_CODE="$candidate" && break
 done
-[ -n "$OVMF_CODE" ] || { echo "::error::tdx2-smoke: no TDVF/OVMF firmware found" >&2; exit 2; }
+[ -n "$OVMF_CODE" ] || { echo "::error::local-tdx-smoke: no TDVF/OVMF firmware found" >&2; exit 2; }
 
 # Config disk: qemu vendor stage probes /dev/vdb, reads iso9660 /agent.env,
 # merges into /run/easyenclave/env before PID 1 starts.
@@ -64,14 +65,14 @@ cleanup() {
     fi
     rm -rf "$CONFIG_DIR" "$CONFIG_ISO" "$WORK_QCOW2" "$QEMU_PID_FILE"
     if [ "${SMOKE_FAILED:-0}" = "1" ]; then
-        echo "tdx2-smoke: preserving $SERIAL_LOG for debug"
+        echo "local-tdx-smoke: preserving $SERIAL_LOG for debug"
     else
         rm -f "$SERIAL_LOG"
     fi
 }
 trap cleanup EXIT
 
-echo "tdx2-smoke: sha12=$SHA12 firmware=$OVMF_CODE hostfwd=localhost:${HOST_PORT}→vm:80"
+echo "local-tdx-smoke: sha12=$SHA12 firmware=$OVMF_CODE hostfwd=localhost:${HOST_PORT}→vm:80"
 
 MEM_BYTES=$((4 * 1024 * 1024 * 1024))
 # TDX requires the memory-backend + -bios + -nodefaults combo; using
@@ -116,7 +117,7 @@ LAST_SIZE=0
 ALL_DONE=false
 for i in $(seq 1 60); do
     if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-        echo "tdx2-smoke: qemu exited early after ${i}×2s"
+        echo "local-tdx-smoke: qemu exited early after ${i}×2s"
         break
     fi
     if [ -f "$SERIAL_LOG" ]; then
@@ -126,7 +127,7 @@ for i in $(seq 1 60); do
             LAST_SIZE=$SIZE
         fi
         if grep -qE "$FATAL_PATTERNS" "$SERIAL_LOG"; then
-            echo "::error::tdx2-smoke: fatal pattern in serial"
+            echo "::error::local-tdx-smoke: fatal pattern in serial"
             break
         fi
         for check in "${CHECKS[@]}"; do
@@ -134,7 +135,7 @@ for i in $(seq 1 60); do
             [ -n "${PASSED[$name]:-}" ] && continue
             if grep -qE "$pattern" "$SERIAL_LOG"; then
                 PASSED[$name]=1
-                echo "tdx2-smoke:   ✓ $name"
+                echo "local-tdx-smoke:   ✓ $name"
             fi
         done
         ALL_DONE=true
@@ -149,39 +150,39 @@ done
 
 HTTP_OK=false
 if $ALL_DONE; then
-    echo "tdx2-smoke: probing http://localhost:${HOST_PORT}/"
+    echo "local-tdx-smoke: probing http://localhost:${HOST_PORT}/"
     for i in $(seq 1 12); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' \
             --connect-timeout 5 "http://localhost:${HOST_PORT}/" 2>/dev/null || echo 000)
         if [ "$code" = "200" ]; then
-            echo "tdx2-smoke:   ✓ workload_http (200)"
+            echo "local-tdx-smoke:   ✓ workload_http (200)"
             HTTP_OK=true
             break
         fi
-        echo "tdx2-smoke: http $code, retrying... ($i/12)"
+        echo "local-tdx-smoke: http $code, retrying... ($i/12)"
         sleep 2
     done
 fi
 
 echo ""
-echo "tdx2-smoke: === summary ==="
+echo "local-tdx-smoke: === summary ==="
 PASS=0; TOTAL=0
 for check in "${CHECKS[@]}"; do
     IFS="|" read -r name _pat <<< "$check"
     TOTAL=$((TOTAL + 1))
     if [ -n "${PASSED[$name]:-}" ]; then
-        echo "tdx2-smoke:   ✓ $name"; PASS=$((PASS + 1))
+        echo "local-tdx-smoke:   ✓ $name"; PASS=$((PASS + 1))
     else
-        echo "tdx2-smoke:   ✗ $name"
+        echo "local-tdx-smoke:   ✗ $name"
     fi
 done
 TOTAL=$((TOTAL + 1))
 if $HTTP_OK; then
-    echo "tdx2-smoke:   ✓ workload_http"; PASS=$((PASS + 1))
+    echo "local-tdx-smoke:   ✓ workload_http"; PASS=$((PASS + 1))
 else
-    echo "tdx2-smoke:   ✗ workload_http"
+    echo "local-tdx-smoke:   ✗ workload_http"
 fi
-echo "tdx2-smoke: $PASS/$TOTAL passed"
+echo "local-tdx-smoke: $PASS/$TOTAL passed"
 
 if $ALL_DONE && $HTTP_OK; then
     exit 0

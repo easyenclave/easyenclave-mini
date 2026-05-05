@@ -43,6 +43,20 @@ make build TARGET=local-tdx-qcow2  # qcow2 backing file for libvirt
 
 For local launch, boot `image/output/local-tdx-qcow2/easyenclave.qcow2` under libvirt+TDVF. If you need boot-time config, attach a second read-only disk or CD-ROM with `/agent.env`; the qemu vendor stage probes `/dev/vdb` and `/dev/sdb` for `iso9660`, `ext4`, `vfat`, or `ext2` config media.
 
+Prepare an SSH-accessible local TDX host:
+
+```bash
+# Status/base tooling only. Exits nonzero if the host TDX stack is incomplete.
+EE_LOCAL_HOST=57.130.10.246 EE_LOCAL_USER=ubuntu \
+  image/ssh-install-local-tdx-host.sh
+
+# Explicitly install Canonical's Ubuntu TDX host stack, then reboot the host.
+EE_LOCAL_HOST=57.130.10.246 EE_LOCAL_USER=ubuntu \
+  image/ssh-install-local-tdx-host.sh --install-tdx-stack
+```
+
+The SSH installer is deliberately split: without `--install-tdx-stack` it only ensures base QEMU/ISO tooling exists and reports `kvm_intel.tdx`, QEMU `tdx-guest`, and TDVF firmware status. The stack install can replace kernel/QEMU/firmware packages, so it is never implicit.
+
 ### Adding a new target
 
 1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES`, `TARGET_CMDLINE`, `TARGET_FORMAT`, `TARGET_OUTPUTS`, and `TARGET_VENDOR`).
