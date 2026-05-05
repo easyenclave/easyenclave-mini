@@ -9,7 +9,7 @@
 # Requires a TDX-capable host with:
 #   - kvm_intel.tdx=Y (check: /sys/module/kvm_intel/parameters/tdx)
 #   - libvirt + virt-install + qemu-system-x86 installed
-#   - /usr/share/OVMF/OVMF_CODE.fd (apt install ovmf)
+#   - TDVF/OVMF firmware, e.g. /usr/share/ovmf/OVMF.tdx.fd
 #   - genisoimage (apt install genisoimage)
 #   - user in the libvirt group
 #
@@ -36,6 +36,7 @@ set -euo pipefail
 
 VM_NAME="easyenclave-local"
 IMAGES_DIR="/var/lib/libvirt/images"
+SERIAL_LOG="/var/log/ee-local.log"
 
 usage() {
     cat <<EOF >&2
@@ -88,6 +89,36 @@ for bin in virsh virt-install genisoimage; do
     }
 done
 
+TDVF_CODE=""
+for candidate in \
+    /usr/local/share/ovmf/OVMF.inteltdx.fd \
+    /usr/share/ovmf/OVMF.fd \
+    /usr/share/ovmf/OVMF.tdx.fd \
+    /usr/share/ovmf/OVMF.inteltdx.ms.fd \
+    /opt/ovmf/OVMF.fd \
+    /usr/share/OVMF/OVMF_CODE_4M.fd; do
+    if [ -f "$candidate" ]; then
+        TDVF_CODE="$candidate"
+        break
+    fi
+done
+[ -n "$TDVF_CODE" ] || { echo "TDVF/OVMF firmware not found" >&2; exit 1; }
+
+qemu_owner() {
+    local conf="/etc/libvirt/qemu.conf"
+    local user="" group=""
+
+    if [ -r "$conf" ]; then
+        user=$(sed -nE 's/^[[:space:]]*user[[:space:]]*=[[:space:]]*"?([^"#]+)"?.*/\1/p' "$conf" | tail -1)
+        group=$(sed -nE 's/^[[:space:]]*group[[:space:]]*=[[:space:]]*"?([^"#]+)"?.*/\1/p' "$conf" | tail -1)
+    elif command -v sudo >/dev/null 2>&1; then
+        user=$(sudo sed -nE 's/^[[:space:]]*user[[:space:]]*=[[:space:]]*"?([^"#]+)"?.*/\1/p' "$conf" 2>/dev/null | tail -1 || true)
+        group=$(sudo sed -nE 's/^[[:space:]]*group[[:space:]]*=[[:space:]]*"?([^"#]+)"?.*/\1/p' "$conf" 2>/dev/null | tail -1 || true)
+    fi
+
+    printf '%s:%s\n' "${user:-libvirt-qemu}" "${group:-kvm}"
+}
+
 # ── Stop any prior instance ──────────────────────────────────────────────
 destroy_existing
 
@@ -109,6 +140,7 @@ BOOT_DISK="${IMAGES_DIR}/${VM_NAME}.qcow2"
 CONFIG_DISK="${IMAGES_DIR}/${VM_NAME}-config.iso"
 sudo install -m 0644 "$QCOW2"      "$BOOT_DISK"
 sudo install -m 0644 "$CONFIG_ISO" "$CONFIG_DISK"
+sudo chown "$(qemu_owner)" "$BOOT_DISK" "$CONFIG_DISK" 2>/dev/null || true
 
 # ── Launch with real TDX ─────────────────────────────────────────────────
 # q35 machine + UEFI firmware + launchSecurity type=tdx is the minimum
@@ -119,6 +151,7 @@ echo "easyenclave: libvirt launch"
 echo "  vm:      $VM_NAME (TDX)"
 echo "  image:   $QCOW2 → $BOOT_DISK"
 echo "  config:  $ENV_FILE → /dev/vdb → /agent.env"
+echo "  tdvf:    $TDVF_CODE"
 echo
 
 virt-install \
@@ -126,16 +159,17 @@ virt-install \
     --ram 4096 \
     --vcpus 2 \
     --machine q35 \
+    --features ioapic.driver=qemu,smm.state=off \
     --disk "path=${BOOT_DISK},format=qcow2,bus=virtio" \
     --disk "path=${CONFIG_DISK},format=raw,bus=virtio" \
     --network bridge=virbr0 \
     --graphics none \
-    --console pty,target_type=serial \
-    --boot firmware=efi \
-    --launchSecurity type=tdx \
+    --serial "file,path=${SERIAL_LOG}" \
+    --boot "loader=${TDVF_CODE},loader.readonly=yes,loader.type=rom" \
+    --launchSecurity type=tdx,policy=0x10000000 \
     --import \
     --noautoconsole
 
 echo
-echo "attached to $VM_NAME serial console (Ctrl-] to detach):"
-exec virsh console "$VM_NAME"
+echo "tailing $SERIAL_LOG (Ctrl-C to detach; VM keeps running):"
+exec sudo tail -f "$SERIAL_LOG"
