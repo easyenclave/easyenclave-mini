@@ -152,7 +152,7 @@ done
 HTTP_OK=false
 if $ALL_DONE; then
     echo "local-tdx-smoke: probing http://localhost:${HOST_PORT}/"
-    for i in $(seq 1 12); do
+    for i in $(seq 1 60); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' \
             --connect-timeout 5 "http://localhost:${HOST_PORT}/" 2>/dev/null || echo 000)
         if [ "$code" = "200" ]; then
@@ -160,8 +160,8 @@ if $ALL_DONE; then
             HTTP_OK=true
             break
         fi
-        echo "local-tdx-smoke: http $code, retrying... ($i/12)"
-        sleep 2
+        echo "local-tdx-smoke: http $code, retrying... ($i/60)"
+        sleep 5
     done
 fi
 

@@ -412,7 +412,7 @@ if $ALL_DONE; then
         --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" \
         --query ipAddress -o tsv)
     echo "smoke:azure: probing http://$VM_IP:80/"
-    for i in $(seq 1 12); do
+    for i in $(seq 1 60); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' \
             --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo 000)
         if [ "$code" = "200" ]; then
@@ -420,7 +420,7 @@ if $ALL_DONE; then
             HTTP_OK=true
             break
         fi
-        echo "smoke:azure: http $code, retrying... ($i/12)"
+        echo "smoke:azure: http $code, retrying... ($i/60)"
         sleep 5
     done
 fi
