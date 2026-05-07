@@ -1,5 +1,5 @@
-//! PID 1 init: load the initrd-written env file, mount attestation + pty
-//! filesystems, reap zombies. All vendor-shaped concerns (networking,
+//! PID 1 init: load the initrd-written env file, mount attestation, pty, and
+//! shared-memory filesystems, reap zombies. All vendor-shaped concerns (networking,
 //! metadata fetch, config-disk probing, cmdline parsing, DNS, hostname)
 //! live in the initrd's per-target vendor stage under
 //! `image/init-templates/vendors/<vendor>.sh`, which writes its results
@@ -42,6 +42,15 @@ pub fn maybe_init() {
     let _ = std::fs::create_dir_all("/dev/pts");
     if let Err(e) = nix_mount("devpts", "/dev/pts", "devpts") {
         eprintln!("easyenclave: init: mount devpts: {e}");
+    }
+
+    // /dev/shm for POSIX shared memory. Container runtimes use this for
+    // libpod/conmon locks even when the container itself uses host networking.
+    let _ = std::fs::create_dir_all("/dev/shm");
+    if let Err(e) =
+        nix_mount_with_data("tmpfs", "/dev/shm", "tmpfs", Some("mode=1777,nosuid,nodev"))
+    {
+        eprintln!("easyenclave: init: mount /dev/shm: {e}");
     }
 
     let _ = std::fs::create_dir_all("/var/lib/easyenclave/workloads");
@@ -88,18 +97,31 @@ fn load_env_file() {
 }
 
 fn nix_mount(src: &str, target: &str, fstype: &str) -> Result<(), String> {
+    nix_mount_with_data(src, target, fstype, None)
+}
+
+fn nix_mount_with_data(
+    src: &str,
+    target: &str,
+    fstype: &str,
+    data: Option<&str>,
+) -> Result<(), String> {
     use std::ffi::CString;
     let _ = std::fs::create_dir_all(target);
     let src = CString::new(src).unwrap();
     let target_c = CString::new(target).unwrap();
     let fstype = CString::new(fstype).unwrap();
+    let data_c = data.map(|s| CString::new(s).unwrap());
+    let data_ptr = data_c
+        .as_ref()
+        .map_or(std::ptr::null(), |s| s.as_ptr() as *const libc::c_void);
     let ret = unsafe {
         libc::mount(
             src.as_ptr(),
             target_c.as_ptr(),
             fstype.as_ptr(),
             0,
-            std::ptr::null(),
+            data_ptr,
         )
     };
     if ret != 0 {
