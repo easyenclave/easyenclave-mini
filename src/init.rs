@@ -47,9 +47,13 @@ pub fn maybe_init() {
     // /dev/shm for POSIX shared memory. Container runtimes use this for
     // libpod/conmon locks even when the container itself uses host networking.
     let _ = std::fs::create_dir_all("/dev/shm");
-    if let Err(e) =
-        nix_mount_with_data("tmpfs", "/dev/shm", "tmpfs", Some("mode=1777,nosuid,nodev"))
-    {
+    if let Err(e) = nix_mount_with_data(
+        "tmpfs",
+        "/dev/shm",
+        "tmpfs",
+        libc::MS_NOSUID | libc::MS_NODEV,
+        Some("mode=1777"),
+    ) {
         eprintln!("easyenclave: init: mount /dev/shm: {e}");
     }
 
@@ -97,13 +101,14 @@ fn load_env_file() {
 }
 
 fn nix_mount(src: &str, target: &str, fstype: &str) -> Result<(), String> {
-    nix_mount_with_data(src, target, fstype, None)
+    nix_mount_with_data(src, target, fstype, 0, None)
 }
 
 fn nix_mount_with_data(
     src: &str,
     target: &str,
     fstype: &str,
+    flags: libc::c_ulong,
     data: Option<&str>,
 ) -> Result<(), String> {
     use std::ffi::CString;
@@ -120,7 +125,7 @@ fn nix_mount_with_data(
             src.as_ptr(),
             target_c.as_ptr(),
             fstype.as_ptr(),
-            0,
+            flags,
             data_ptr,
         )
     };
