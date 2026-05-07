@@ -57,7 +57,7 @@ gcloud compute images create "$IMAGE_NAME" \
 cat > /tmp/ee-config.json <<'EECONF'
 {
   "EE_OWNER": "ci-smoke",
-  "EE_BOOT_WORKLOADS": "[{\"github_release\":{\"repo\":\"mgoltzsche/podman-static\",\"asset\":\"podman-linux-amd64.tar.gz\",\"tag\":\"v5.8.2\",\"rename\":\"podman-linux-amd64/usr/local/bin/podman\"},\"cmd\":[\"podman\",\"--tmpdir\",\"/run/libpod/tmp\",\"--root\",\"/var/lib/easyenclave/containers/storage\",\"--runroot\",\"/run/containers/storage\",\"--storage-driver\",\"vfs\",\"--events-backend\",\"file\",\"--cgroup-manager\",\"cgroupfs\",\"--conmon\",\"/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/conmon\",\"--runtime\",\"/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin/crun\",\"--network-cmd-path\",\"/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/netavark\",\"run\",\"--rm\",\"--pull=always\",\"--network\",\"host\",\"--cgroups\",\"disabled\",\"docker.io/library/nginx:alpine\"],\"env\":[\"PATH=/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin:/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/libexec/podman:/usr/local/bin:/usr/bin:/bin\",\"CONTAINERS_CONF=/etc/easyenclave/podman-smoke-containers.conf\",\"CONTAINERS_STORAGE_CONF=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/storage.conf\",\"REGISTRIES_CONFIG_PATH=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/registries.conf\",\"TMPDIR=/tmp\",\"PODMAN_IGNORE_CGROUPSV1_WARNING=1\"],\"app_name\":\"podman-http\"}]"
+  "EE_BOOT_WORKLOADS": "[{\"github_release\":{\"repo\":\"mgoltzsche/podman-static\",\"asset\":\"podman-linux-amd64.tar.gz\",\"tag\":\"v5.8.2\",\"rename\":\"podman-linux-amd64/usr/local/bin/podman\"},\"cmd\":[\"podman\",\"--tmpdir\",\"/run/libpod/tmp\",\"--root\",\"/var/lib/easyenclave/containers/storage\",\"--runroot\",\"/run/containers/storage\",\"--storage-driver\",\"vfs\",\"--events-backend\",\"file\",\"--cgroup-manager\",\"cgroupfs\",\"--conmon\",\"/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/conmon\",\"--runtime\",\"/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin/crun\",\"--network-cmd-path\",\"/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/netavark\",\"run\",\"--rm\",\"--network\",\"host\",\"--cgroups\",\"disabled\",\"--rootfs\",\"/var/lib/easyenclave/bin/podman-linux-amd64\",\"/usr/local/bin/podman\",\"system\",\"service\",\"tcp:0.0.0.0:80\",\"--time=0\"],\"env\":[\"PATH=/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin:/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/libexec/podman:/usr/local/bin:/usr/bin:/bin\",\"CONTAINERS_CONF=/etc/easyenclave/podman-smoke-containers.conf\",\"CONTAINERS_STORAGE_CONF=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/storage.conf\",\"REGISTRIES_CONFIG_PATH=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/registries.conf\",\"TMPDIR=/tmp\",\"PODMAN_IGNORE_CGROUPSV1_WARNING=1\"],\"app_name\":\"podman-http\"}]"
 }
 EECONF
 
@@ -125,10 +125,10 @@ if $ALL_DONE; then
     VM_IP=$(gcloud compute instances describe "$VM_NAME" \
         --project="$GCP_PROJECT" --zone="$ZONE" \
         --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
-    echo "smoke:gcp: probing http://$VM_IP:80/"
+    echo "smoke:gcp: probing http://$VM_IP:80/_ping"
     for i in $(seq 1 60); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' \
-            --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo 000)
+            --connect-timeout 5 "http://$VM_IP:80/_ping" 2>/dev/null || echo 000)
         if [ "$code" = "200" ]; then
             echo "smoke:gcp:   ✓ workload_http (200)"
             HTTP_OK=true
