@@ -8,8 +8,6 @@ mod socket;
 mod workload;
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -175,17 +173,6 @@ fn maybe_run_subcommand() -> bool {
             });
             true
         }
-        Some("smoke-http") => {
-            let opts = parse_smoke_http_args(args.collect()).unwrap_or_else(|e| {
-                eprintln!("easyenclave smoke-http: {e}");
-                std::process::exit(2);
-            });
-            run_smoke_http(opts).unwrap_or_else(|e| {
-                eprintln!("easyenclave smoke-http: {e}");
-                std::process::exit(1);
-            });
-            true
-        }
         Some("--help") | Some("-h") => {
             print_usage();
             true
@@ -246,78 +233,10 @@ fn run_initrd_probe(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-struct SmokeHttpOptions {
-    port: u16,
-    body: String,
-}
-
-fn parse_smoke_http_args(args: Vec<String>) -> Result<SmokeHttpOptions, String> {
-    let mut port = 80u16;
-    let mut body = "ok\n".to_string();
-    let mut i = 0usize;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--port" => {
-                i += 1;
-                let value = args.get(i).ok_or("--port requires a value")?;
-                port = value
-                    .parse::<u16>()
-                    .map_err(|e| format!("invalid --port value {value:?}: {e}"))?;
-            }
-            "--body" => {
-                i += 1;
-                body = args.get(i).ok_or("--body requires a value")?.clone();
-            }
-            "--help" | "-h" => {
-                print_smoke_http_usage();
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown smoke-http argument {other:?}")),
-        }
-        i += 1;
-    }
-    Ok(SmokeHttpOptions { port, body })
-}
-
-fn run_smoke_http(opts: SmokeHttpOptions) -> Result<(), String> {
-    let listener = TcpListener::bind(("0.0.0.0", opts.port))
-        .map_err(|e| format!("bind 0.0.0.0:{}: {e}", opts.port))?;
-    eprintln!("easyenclave smoke-http: listening on 0.0.0.0:{}", opts.port);
-
-    for conn in listener.incoming() {
-        let mut stream = match conn {
-            Ok(stream) => stream,
-            Err(e) => {
-                eprintln!("easyenclave smoke-http: accept failed: {e}");
-                continue;
-            }
-        };
-
-        let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf);
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            opts.body.len(),
-            opts.body
-        );
-        if let Err(e) = stream.write_all(response.as_bytes()) {
-            eprintln!("easyenclave smoke-http: write failed: {e}");
-        }
-    }
-
-    Ok(())
-}
-
 fn print_usage() {
-    eprintln!(
-        "usage: easyenclave [initrd [--probe-only] | smoke-http [--port PORT] [--body BODY]]"
-    );
+    eprintln!("usage: easyenclave [initrd [--probe-only]]");
 }
 
 fn print_initrd_usage() {
     eprintln!("usage: easyenclave initrd [--probe-only]");
-}
-
-fn print_smoke_http_usage() {
-    eprintln!("usage: easyenclave smoke-http [--port PORT] [--body BODY]");
 }

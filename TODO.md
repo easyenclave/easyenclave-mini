@@ -10,8 +10,9 @@ initrd do not depend on BusyBox applets or `veritysetup`.
 Current dependency split:
 
 - The final rootfs no longer installs `busybox-static` or BusyBox applet
-  symlinks. Runtime smoke workloads use `easyenclave smoke-http` instead of
-  `sh -c` and `busybox httpd`.
+  symlinks. Runtime smoke workloads fetch Podman as a GitHub release asset
+  and use it to run a containerized webserver instead of `sh -c` and
+  `busybox httpd`.
 - The initrd builder still copies BusyBox and symlinks applets for shell init,
   module loading, root discovery, networking, DHCP, metadata fetches, and
   config parsing.
@@ -21,7 +22,7 @@ Current dependency split:
 Migration order:
 
 1. Done: remove BusyBox from the final rootfs first. Smoke-test workloads use
-   the dedicated `easyenclave smoke-http` mode.
+   a fetched Podman bundle to run a containerized webserver.
 2. Done: stop installing BusyBox applet symlinks in `mkosi.postinst.chroot`
    and remove `busybox-static` from `mkosi.conf`.
 3. Done: add an inert `easyenclave initrd --probe-only` mode and copy the
