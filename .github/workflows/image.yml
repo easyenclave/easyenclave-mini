@@ -109,16 +109,9 @@ jobs:
           KERNEL_FLAVOR: ${{ matrix.kernel_flavor }}
         run: bash image/ci-install-build-deps.sh
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install mkosi v26
-        run: |
-          pip install 'git+https://github.com/systemd/mkosi.git@v26' pefile
-          sudo ln -sf "$(which mkosi)" /usr/local/bin/mkosi
-
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
 
       - name: Build (TARGET=${{ matrix.target }})
@@ -126,7 +119,6 @@ jobs:
           KVER: ${{ steps.deps.outputs.kver }}
           TARGET: ${{ matrix.target }}
         run: |
-          cargo build --release
           cd image && make build KVER="$KVER" TARGET="$TARGET"
 
       - name: Rename + compute measurements
