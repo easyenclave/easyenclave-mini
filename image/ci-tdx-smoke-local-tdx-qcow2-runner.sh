@@ -42,7 +42,7 @@ done
 CONFIG_DIR=$(mktemp -d)
 cat > "$CONFIG_DIR/agent.env" <<'EECONF'
 EE_OWNER=ci-smoke-local-tdx-qcow2
-EE_BOOT_WORKLOADS=[{"github_release":{"repo":"mgoltzsche/podman-static","asset":"podman-linux-amd64.tar.gz","tag":"v5.8.2","rename":"podman-linux-amd64/usr/local/bin/podman"},"cmd":["podman","--tmpdir","/run/libpod/tmp","--root","/var/lib/easyenclave/containers/storage","--runroot","/run/containers/storage","--storage-driver","vfs","--events-backend","file","--cgroup-manager","cgroupfs","--conmon","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/conmon","--runtime","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin/crun","--network-cmd-path","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/netavark","run","--rm","--network","host","--cgroups","disabled","--env","HOME=/tmp","--env","TMPDIR=/tmp","--env","USER=root","--env","LOGNAME=root","--tmpfs","/tmp:rw,exec,nosuid,size=64m","--rootfs","/var/lib/easyenclave/bin/podman-linux-amd64","/usr/local/bin/podman","system","service","tcp:0.0.0.0:80","--time=0"],"env":["PATH=/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin:/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/libexec/podman:/usr/local/bin:/usr/bin:/bin","CONTAINERS_CONF=/etc/easyenclave/podman-smoke-containers.conf","CONTAINERS_STORAGE_CONF=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/storage.conf","REGISTRIES_CONFIG_PATH=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/registries.conf","TMPDIR=/tmp","HOME=/var/lib/easyenclave","USER=root","LOGNAME=root","PODMAN_IGNORE_CGROUPSV1_WARNING=1"],"app_name":"podman-http"}]
+EE_BOOT_WORKLOADS=[{"github_release":{"repo":"mgoltzsche/podman-static","asset":"podman-linux-amd64.tar.gz","tag":"v5.8.2","rename":"podman-linux-amd64/usr/local/bin/podman"},"cmd":["podman","--tmpdir","/run/libpod/tmp","--root","/var/lib/easyenclave/containers/storage","--runroot","/run/containers/storage","--storage-driver","vfs","--events-backend","file","--cgroup-manager","cgroupfs","--conmon","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/conmon","--runtime","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin/crun","--network-cmd-path","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/netavark","run","--rm","--network","host","--cgroups","disabled","--env","HOME=/tmp","--env","TMPDIR=/tmp","--env","USER=root","--env","LOGNAME=root","--tmpfs","/tmp:rw,exec,nosuid,size=64m","--rootfs","/var/lib/easyenclave/bin/podman-linux-amd64","/usr/local/bin/podman","system","service","tcp:0.0.0.0:8080","--time=0"],"env":["PATH=/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin:/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/libexec/podman:/usr/local/bin:/usr/bin:/bin","CONTAINERS_CONF=/etc/easyenclave/podman-smoke-containers.conf","CONTAINERS_STORAGE_CONF=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/storage.conf","REGISTRIES_CONFIG_PATH=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/registries.conf","TMPDIR=/tmp","HOME=/var/lib/easyenclave","USER=root","LOGNAME=root","PODMAN_IGNORE_CGROUPSV1_WARNING=1"],"app_name":"podman-http"}]
 EECONF
 CONFIG_ISO=$(mktemp --suffix=.iso)
 genisoimage -quiet -o "$CONFIG_ISO" -V CONFIG -r -J "$CONFIG_DIR/agent.env"
@@ -73,7 +73,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "local-tdx-smoke: sha12=$SHA12 firmware=$OVMF_CODE hostfwd=localhost:${HOST_PORT}→vm:80"
+echo "local-tdx-smoke: sha12=$SHA12 firmware=$OVMF_CODE hostfwd=localhost:${HOST_PORT}->vm:8080"
 
 MEM_BYTES=$((4 * 1024 * 1024 * 1024))
 # TDX requires the memory-backend + -bios + -nodefaults combo; using
@@ -96,7 +96,7 @@ qemu-system-x86_64 \
     -device virtio-blk-pci,drive=rootdrv \
     -drive "file=$CONFIG_ISO,if=none,id=cfgdrv,format=raw,readonly=on" \
     -device virtio-blk-pci,drive=cfgdrv \
-    -netdev "user,id=n0,hostfwd=tcp::${HOST_PORT}-:80" \
+    -netdev "user,id=n0,hostfwd=tcp::${HOST_PORT}-:8080" \
     -device virtio-net-pci,netdev=n0 \
     -serial "file:$SERIAL_LOG" \
     -display none -no-reboot -no-user-config -nodefaults \
