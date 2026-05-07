@@ -35,6 +35,11 @@ pub struct GithubRelease {
 pub fn download(release: &GithubRelease, bin_dir: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(bin_dir).map_err(|e| format!("create bin_dir: {e}"))?;
 
+    if let Some(path) = cached_primary(release, bin_dir) {
+        eprintln!("easyenclave: using cached release asset {}", path.display());
+        return Ok(path);
+    }
+
     let token = std::env::var("EE_GITHUB_TOKEN").ok();
 
     // 1. Fetch release metadata to find the asset's download URL.
@@ -97,6 +102,22 @@ pub fn download(release: &GithubRelease, bin_dir: &str) -> Result<PathBuf, Strin
     }
 
     Ok(primary)
+}
+
+fn cached_primary(release: &GithubRelease, bin_dir: &str) -> Option<PathBuf> {
+    let path = if is_tarball(&release.asset) {
+        let stem = release
+            .rename
+            .clone()
+            .unwrap_or_else(|| strip_tarball_ext(&release.asset).to_string());
+        PathBuf::from(format!("{bin_dir}/{stem}"))
+    } else if let Some(name) = &release.rename {
+        PathBuf::from(format!("{bin_dir}/{name}"))
+    } else {
+        PathBuf::from(format!("{bin_dir}/{}", release.asset))
+    };
+
+    path.exists().then_some(path)
 }
 
 fn http_get_json(url: &str, token: Option<&str>) -> Result<serde_json::Value, String> {
