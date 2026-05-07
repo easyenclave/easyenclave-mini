@@ -1,5 +1,5 @@
-//! PID 1 init: load the initrd-written env file, mount attestation, pty, and
-//! shared-memory filesystems, reap zombies. All vendor-shaped concerns (networking,
+//! PID 1 init: load the initrd-written env file, mount attestation, pty,
+//! cgroup, and shared-memory filesystems, reap zombies. All vendor-shaped concerns (networking,
 //! metadata fetch, config-disk probing, cmdline parsing, DNS, hostname)
 //! live in the initrd's per-target vendor stage under
 //! `image/init-templates/vendors/<vendor>.sh`, which writes its results
@@ -42,6 +42,20 @@ pub fn maybe_init() {
     let _ = std::fs::create_dir_all("/dev/pts");
     if let Err(e) = nix_mount("devpts", "/dev/pts", "devpts") {
         eprintln!("easyenclave: init: mount devpts: {e}");
+    }
+
+    // /sys/fs/cgroup for OCI runtimes. We still run the smoke workload
+    // with cgroups disabled, but crun/runc require the mount point to be
+    // a real cgroup filesystem while constructing the container spec.
+    let _ = std::fs::create_dir_all("/sys/fs/cgroup");
+    if let Err(e) = nix_mount_with_data(
+        "cgroup2",
+        "/sys/fs/cgroup",
+        "cgroup2",
+        libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+        None,
+    ) {
+        eprintln!("easyenclave: init: mount cgroup2: {e}");
     }
 
     // /dev/shm for POSIX shared memory. Container runtimes use this for
