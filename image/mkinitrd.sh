@@ -78,16 +78,6 @@ for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod \
     ln -s busybox "$WORKDIR/bin/$cmd"
 done
 
-# Ship easyenclave in the initrd before it owns boot. The shell /init is
-# still authoritative, but `easyenclave initrd --probe-only` can run in the
-# same early userspace that later Rust initrd work will replace.
-EE_INITRD_BIN="${EE_INITRD_BIN:-$SCRIPT_DIR/ee.extra/usr/local/bin/easyenclave}"
-if [ -x "$EE_INITRD_BIN" ]; then
-    copy_elf_with_libs "$EE_INITRD_BIN" "$WORKDIR/bin/easyenclave"
-else
-    echo "WARN: easyenclave binary $EE_INITRD_BIN missing — initrd probe mode unavailable"
-fi
-
 # Copy modules + full transitive dep tree using modprobe's resolution.
 # modprobe --show-depends is the source of truth — don't hand-list deps.
 # Preserve the kernel/... path structure so modules.dep entries still resolve
@@ -164,10 +154,9 @@ echo "=== modules.dep ==="
 cat "$MODDIR/modules.dep" 2>/dev/null || echo "(missing)"
 echo "==="
 
-# veritysetup for dm-verity (from cryptsetup-bin). Only meaningful for
-# strategies that use dm-verity (ext4-label does; other strategies
-# doesn't). Copying unconditionally adds ~200KB + libs; cheap insurance.
-if command -v veritysetup >/dev/null 2>&1; then
+# veritysetup for dm-verity (from cryptsetup-bin). This pulls in a large
+# OpenSSL/libcryptsetup stack, so targets must opt in explicitly.
+if [ "${TARGET_ENABLE_VERITY:-0}" = "1" ] && command -v veritysetup >/dev/null 2>&1; then
     copy_elf_with_libs "$(which veritysetup)" "$WORKDIR/sbin/veritysetup"
 fi
 
