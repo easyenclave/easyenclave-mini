@@ -24,8 +24,9 @@ Migration order:
    the dedicated `easyenclave smoke-http` mode.
 2. Done: stop installing BusyBox applet symlinks in `mkosi.postinst.chroot`
    and remove `busybox-static` from `mkosi.conf`.
-3. Add an `easyenclave initrd` mode and copy the release binary into the
-   initrd while the existing shell `/init` remains the boot authority.
+3. Done: add an inert `easyenclave initrd --probe-only` mode and copy the
+   release binary plus required dynamic libraries into the initrd while the
+   existing shell `/init` remains the boot authority.
 4. Make dm-verity image generation explicit: create the hash metadata during
    image assembly, persist the root hash as an artifact, and pass the data
    device, hash device, and `roothash=` in each target's UKI cmdline.
