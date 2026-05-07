@@ -109,7 +109,7 @@ smoke_run_prefixes_older_than() {
 
 delete_smoke_run_resources() {
     local run_prefix="$1"
-    local vm_names vm ids id pass
+    local vm_names vm resource_types resource_type ids id pass
     [ -n "$run_prefix" ] || return 0
     echo "smoke:azure: deleting resources for ${run_prefix}-*"
 
@@ -126,10 +126,27 @@ delete_smoke_run_resources() {
         done <<< "$vm_names"
     fi
 
+    # Delete common dependent resource types in dependency order. The
+    # final generic sweep still catches anything added later, but this
+    # keeps NIC/PIP/NSG/VNet teardown deterministic instead of relying
+    # on ARM's unordered resource list.
+    resource_types="Microsoft.Network/networkInterfaces Microsoft.Network/publicIPAddresses Microsoft.Network/networkSecurityGroups Microsoft.Network/virtualNetworks Microsoft.Compute/disks"
+    for resource_type in $resource_types; do
+        ids=$(az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query "[?starts_with(name, '${run_prefix}') && type=='${resource_type}'].id" -o tsv 2>/dev/null || true)
+        [ -n "$ids" ] || continue
+        echo "smoke:azure: delete ${resource_type} resources for ${run_prefix}-*"
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            az resource delete --ids "$id" --verbose || true
+        done <<< "$ids"
+        sleep 5
+    done
+
     # ARM dependencies are eventually consistent: a NIC may block a VNet
     # delete for a few seconds, disks may outlive VM deletion briefly, etc.
     # Sweep several times instead of trusting one unordered batch.
-    for pass in 1 2 3; do
+    for pass in 1 2 3 4 5 6; do
         ids=$(az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
             --query "[?starts_with(name, '${run_prefix}')].id" -o tsv 2>/dev/null || true)
         [ -n "$ids" ] || return 0
