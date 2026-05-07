@@ -13,6 +13,10 @@ use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
+    if maybe_run_subcommand() {
+        return;
+    }
+
     // 1. PID 1 init (mount filesystems, parse kernel cmdline, reap zombies)
     init::maybe_init();
 
@@ -157,4 +161,82 @@ fn mint_boot_token() -> String {
         }
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn maybe_run_subcommand() -> bool {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("initrd") => {
+            run_initrd_probe(args.collect()).unwrap_or_else(|e| {
+                eprintln!("easyenclave initrd: {e}");
+                std::process::exit(1);
+            });
+            true
+        }
+        Some("--help") | Some("-h") => {
+            print_usage();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn run_initrd_probe(args: Vec<String>) -> Result<(), String> {
+    for arg in &args {
+        match arg.as_str() {
+            "--probe-only" => {}
+            "--help" | "-h" => {
+                print_initrd_usage();
+                return Ok(());
+            }
+            other => return Err(format!("unknown initrd argument {other:?}")),
+        }
+    }
+
+    let cmdline =
+        std::fs::read_to_string("/proc/cmdline").map_err(|e| format!("read /proc/cmdline: {e}"))?;
+    let mut root = None;
+    let mut roothash = None;
+    let mut verity_root_data = None;
+    let mut verity_root_hash = None;
+    let mut ee_params = 0usize;
+
+    for param in cmdline.split_whitespace() {
+        if let Some(value) = param.strip_prefix("root=") {
+            root = Some(value);
+        } else if let Some(value) = param.strip_prefix("roothash=") {
+            roothash = Some(value);
+        } else if let Some(value) = param.strip_prefix("systemd.verity_root_data=") {
+            verity_root_data = Some(value);
+        } else if let Some(value) = param.strip_prefix("systemd.verity_root_hash=") {
+            verity_root_hash = Some(value);
+        } else if param.starts_with("ee.") {
+            ee_params += 1;
+        }
+    }
+
+    eprintln!("easyenclave initrd: probe-only mode");
+    eprintln!("easyenclave initrd: root={}", root.unwrap_or("<unset>"));
+    eprintln!(
+        "easyenclave initrd: systemd.verity_root_data={}",
+        verity_root_data.unwrap_or("<unset>")
+    );
+    eprintln!(
+        "easyenclave initrd: systemd.verity_root_hash={}",
+        verity_root_hash.unwrap_or("<unset>")
+    );
+    eprintln!(
+        "easyenclave initrd: roothash={}",
+        roothash.unwrap_or("<unset>")
+    );
+    eprintln!("easyenclave initrd: ee_params={ee_params}");
+    Ok(())
+}
+
+fn print_usage() {
+    eprintln!("usage: easyenclave [initrd [--probe-only]]");
+}
+
+fn print_initrd_usage() {
+    eprintln!("usage: easyenclave initrd [--probe-only]");
 }
