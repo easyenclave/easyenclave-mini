@@ -25,10 +25,12 @@
 #   SHA12                   commit sha12 for naming
 #
 # Optional env (override defaults):
-#   AZURE_REGION            default eastus2
-#   AZURE_VM_SIZE           default Standard_DC2es_v5 (TDX SKU)
+#   AZURE_REGION            default westus3
+#   AZURE_VM_SIZE           default Standard_DC2es_v6 (TDX SKU)
 #   AZURE_GALLERY           default easyenclaveGallery
-#   AZURE_IMG_DEF           default easyenclave-x64
+#   AZURE_IMG_DEF           default easyenclave-mini-x64
+#   AZURE_SMOKE_STALE_AFTER_SECONDS
+#                           default 1800; preflight removes older smoke runs
 #
 # Assumes: already authenticated via azure/login action. The surrounding
 # workflow runs this with `continue-on-error: true` (for matrix.target ==
@@ -51,13 +53,15 @@ set -euo pipefail
 # the VM provision step pulls a local-region replica.
 REGION="${AZURE_REGION:-westus3}"
 VM_SIZE="${AZURE_VM_SIZE:-Standard_DC2es_v6}"
+SMOKE_PREFIX="${AZURE_SMOKE_PREFIX:-ee-smoke-}"
+STALE_AFTER_SECONDS="${AZURE_SMOKE_STALE_AFTER_SECONDS:-1800}"
 STORAGE_REGION="$(az group show --name "$AZURE_RESOURCE_GROUP" --query location -o tsv)"
 [ -n "$STORAGE_REGION" ] || { echo "::error::smoke:azure: couldn't resolve RG location" >&2; exit 1; }
 VHD="image/output/azure/easyenclave-mini-${SHA12}-azure.vhd"
 [ -f "$VHD" ] || { echo "missing $VHD" >&2; exit 2; }
 
 STAMP=$(date +%s)
-PREFIX="ee-smoke-${SHA12}-${STAMP}"
+PREFIX="${SMOKE_PREFIX}${SHA12}-${STAMP}"
 VM_NAME="${PREFIX}-vm"
 NIC_NAME="${PREFIX}-nic"
 PIP_NAME="${PREFIX}-pip"
@@ -77,6 +81,125 @@ STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}" | sh
 STORAGE_CONTAINER="${AZURE_STORAGE_CONTAINER:-vhds}"
 BLOB_NAME="${PREFIX}.vhd"
 
+run_stamp_from_name() {
+    local name="$1"
+    local rest sha stamp suffix
+    rest="${name#"$SMOKE_PREFIX"}"
+    IFS=- read -r sha stamp suffix <<< "$rest"
+    case "$stamp" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$stamp"
+}
+
+smoke_run_prefixes_older_than() {
+    local cutoff="$1"
+    local name stamp rest sha
+    az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+        --query "[?starts_with(name, '${SMOKE_PREFIX}')].name" -o tsv 2>/dev/null \
+      | while IFS= read -r name; do
+            stamp="$(run_stamp_from_name "$name" || true)"
+            [ -n "$stamp" ] || continue
+            [ "$stamp" -lt "$cutoff" ] || continue
+            rest="${name#"$SMOKE_PREFIX"}"
+            sha="${rest%%-*}"
+            printf '%s%s-%s\n' "$SMOKE_PREFIX" "$sha" "$stamp"
+        done | sort -u
+}
+
+delete_smoke_run_resources() {
+    local run_prefix="$1"
+    local vm_names vm ids id pass
+    [ -n "$run_prefix" ] || return 0
+    echo "smoke:azure: deleting resources for ${run_prefix}-*"
+
+    # VMs hold regional core quota. Delete them synchronously before the
+    # generic resource sweep so quota is released before a subsequent VM
+    # create attempt.
+    vm_names=$(az vm list --resource-group "$AZURE_RESOURCE_GROUP" \
+        --query "[?starts_with(name, '${run_prefix}')].name" -o tsv 2>/dev/null || true)
+    if [ -n "$vm_names" ]; then
+        while IFS= read -r vm; do
+            [ -n "$vm" ] || continue
+            echo "smoke:azure: delete vm $vm"
+            az vm delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$vm" --yes || true
+        done <<< "$vm_names"
+    fi
+
+    # ARM dependencies are eventually consistent: a NIC may block a VNet
+    # delete for a few seconds, disks may outlive VM deletion briefly, etc.
+    # Sweep several times instead of trusting one unordered batch.
+    for pass in 1 2 3; do
+        ids=$(az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query "[?starts_with(name, '${run_prefix}')].id" -o tsv 2>/dev/null || true)
+        [ -n "$ids" ] || return 0
+        echo "smoke:azure: generic sweep pass $pass for ${run_prefix}-*"
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            az resource delete --ids "$id" --verbose || true
+        done <<< "$ids"
+        sleep 10
+    done
+}
+
+cleanup_stale_smoke_runs() {
+    local cutoff stale_prefixes
+    cutoff=$(( $(date +%s) - STALE_AFTER_SECONDS ))
+    echo "smoke:azure: preflight stale cleanup before $cutoff ($(date -u -d "@$cutoff" '+%Y-%m-%dT%H:%MZ'))"
+    stale_prefixes=$(smoke_run_prefixes_older_than "$cutoff" || true)
+    if [ -z "$stale_prefixes" ]; then
+        echo "smoke:azure: no stale ${SMOKE_PREFIX}* resource prefixes"
+        return 0
+    fi
+    while IFS= read -r stale_prefix; do
+        [ -n "$stale_prefix" ] || continue
+        delete_smoke_run_resources "$stale_prefix"
+    done <<< "$stale_prefixes"
+}
+
+prune_old_image_versions() {
+    local cutoff versions version stamp
+    cutoff="$1"
+    if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
+            --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" >/dev/null 2>&1; then
+        return 0
+    fi
+    versions=$(az sig image-version list --resource-group "$AZURE_RESOURCE_GROUP" \
+        --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
+        --query "[].name" -o tsv 2>/dev/null || true)
+    while IFS= read -r version; do
+        [ -n "$version" ] || continue
+        stamp="${version##*.}"
+        case "$stamp" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        [ "$stamp" -lt "$cutoff" ] || continue
+        echo "smoke:azure: delete stale image version $version"
+        az sig image-version delete --resource-group "$AZURE_RESOURCE_GROUP" \
+            --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
+            --gallery-image-version "$version" --no-wait || true
+    done <<< "$versions"
+}
+
+prune_old_blobs() {
+    local cutoff blobs blob stamp
+    cutoff="$1"
+    [ -n "${ACCT_KEY:-}" ] || return 0
+    blobs=$(az storage blob list --account-name "$STORAGE_ACCT" \
+        --container-name "$STORAGE_CONTAINER" --account-key "$ACCT_KEY" \
+        --query "[?starts_with(name, '${SMOKE_PREFIX}')].name" -o tsv 2>/dev/null || true)
+    while IFS= read -r blob; do
+        [ -n "$blob" ] || continue
+        stamp="$(run_stamp_from_name "$blob" || true)"
+        [ -n "$stamp" ] || continue
+        [ "$stamp" -lt "$cutoff" ] || continue
+        echo "smoke:azure: delete stale blob $blob"
+        az storage blob delete --account-name "$STORAGE_ACCT" \
+            --container-name "$STORAGE_CONTAINER" --name "$blob" \
+            --account-key "$ACCT_KEY" || true
+    done <<< "$blobs"
+}
+
 cleanup() {
     set +e
     # Guard against a pre-PREFIX exit (e.g. someone rearranges the script
@@ -84,15 +207,7 @@ cleanup() {
     # could match unintended resources or produce confusing errors.
     [ -n "${PREFIX:-}" ] || return 0
     echo "smoke:azure: cleanup"
-    # VM delete WITHOUT --no-wait: we need Azure to at least ACK the
-    # delete request before this script exits. Previously --no-wait +
-    # runner-kill could leave the DELETE un-posted, orphaning the VM
-    # (and its cores). The wait is ~30-60s, well within budget.
-    # Dropped 2>/dev/null on every cleanup line (keeping || true) so
-    # real cleanup failures surface in the CI log — the earlier silent
-    # swallow masked the managed-disk + NIC orphans that eventually
-    # filled the WestUS3 cores quota.
-    az vm delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" --yes || true
+    delete_smoke_run_resources "$PREFIX"
     az sig image-version delete --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
         --gallery-image-version "$IMG_VERSION" --no-wait || true
@@ -106,22 +221,10 @@ cleanup() {
         az storage blob delete --account-name "$STORAGE_ACCT" --container-name "$STORAGE_CONTAINER" \
             --name "$BLOB_NAME" --account-key "$CLEANUP_KEY" || true
     fi
-    az network nic delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NIC_NAME" --no-wait || true
-    az network public-ip delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" --no-wait || true
-    az network nsg delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NSG_NAME" --no-wait || true
-    az network vnet delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VNET_NAME" --no-wait || true
-
-    # Belt-and-suspenders: any resource whose name starts with our
-    # per-run PREFIX that the named deletes above missed (future
-    # naming drift, partial writes, resource types added to the
-    # script without a matching cleanup line). --no-wait so runner
-    # timeout doesn't kill mid-sweep.
-    echo "smoke:azure: prefix sweep for ${PREFIX}-*"
-    az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
-        --query "[?starts_with(name, '${PREFIX}')].id" -o tsv 2>/dev/null \
-      | xargs -r az resource delete --ids --verbose || true
 }
 trap cleanup EXIT
+
+cleanup_stale_smoke_runs
 
 # ── Shared Image Gallery bootstrap (idempotent) ─────────────────────
 # `az sig show` / `image-definition show` return non-zero if missing;
@@ -142,6 +245,8 @@ if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
         --features SecurityType=ConfidentialVmSupported \
         --publisher easyenclave --offer easyenclave-mini --sku linux-x64 >/dev/null
 fi
+
+prune_old_image_versions "$(( $(date +%s) - STALE_AFTER_SECONDS ))"
 
 # ── Upload VHD to a storage-account page blob ──────────────────────
 # Direct blob upload avoids the managed-disk intermediate entirely. The
@@ -170,6 +275,8 @@ ACCT_KEY=$(az storage account keys list \
 az storage container create \
     --account-name "$STORAGE_ACCT" --name "$STORAGE_CONTAINER" \
     --account-key "$ACCT_KEY" --public-access off >/dev/null 2>&1 || true
+
+prune_old_blobs "$(( $(date +%s) - STALE_AFTER_SECONDS ))"
 
 echo "smoke:azure: upload VHD to blob $STORAGE_ACCT/$STORAGE_CONTAINER/$BLOB_NAME"
 EXPIRY=$(date -u -d '+1 hour' '+%Y-%m-%dT%H:%MZ')
@@ -250,7 +357,7 @@ IMG_VERSION_ID=$(az sig image-version show \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
     --gallery-image-version "$IMG_VERSION" --query id -o tsv)
 
-# Networking scaffolding. NSG opens port 80 for the HTTP workload check.
+# Networking scaffolding. NSG opens port 8080 for the HTTP workload check.
 az network vnet create \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$VNET_NAME" \
     --location "$REGION" \
@@ -262,7 +369,7 @@ az network nsg create \
 az network nsg rule create \
     --resource-group "$AZURE_RESOURCE_GROUP" --nsg-name "$NSG_NAME" \
     --name allow-http --priority 100 --protocol Tcp \
-    --destination-port-ranges 80 --access Allow >/dev/null
+    --destination-port-ranges 8080 --access Allow >/dev/null
 az network public-ip create \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" \
     --location "$REGION" --sku Standard --allocation-method Static >/dev/null
@@ -277,7 +384,7 @@ az network nic create \
 # legacy JSON form (gcp test exercises the JSON path).
 cat > /tmp/ee-config.env <<'EECONF'
 EE_OWNER=ci-smoke-azure
-EE_BOOT_WORKLOADS=[{"cmd":["sh","-c","echo ok > /tmp/index.html"],"app_name":"seed"},{"cmd":["busybox","httpd","-f","-p","80","-h","/tmp"],"app_name":"http"}]
+EE_BOOT_WORKLOADS=[{"github_release":{"repo":"mgoltzsche/podman-static","asset":"podman-linux-amd64.tar.gz","tag":"v5.8.2","rename":"podman-linux-amd64/usr/local/bin/podman"},"cmd":["podman","--tmpdir","/run/libpod/tmp","--root","/var/lib/easyenclave/containers/storage","--runroot","/run/containers/storage","--storage-driver","vfs","--events-backend","file","--cgroup-manager","cgroupfs","--conmon","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/conmon","--runtime","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin/crun","--network-cmd-path","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/netavark","run","--rm","--network","host","--cgroups","disabled","--env","HOME=/tmp","--env","TMPDIR=/tmp","--env","USER=root","--env","LOGNAME=root","--tmpfs","/tmp:rw,exec,nosuid,size=64m","--rootfs","/var/lib/easyenclave/bin/podman-linux-amd64","/usr/local/bin/podman","system","service","tcp:0.0.0.0:8080","--time=0"],"env":["PATH=/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin:/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/libexec/podman:/usr/local/bin:/usr/bin:/bin","CONTAINERS_CONF=/etc/easyenclave/podman-smoke-containers.conf","CONTAINERS_STORAGE_CONF=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/storage.conf","REGISTRIES_CONFIG_PATH=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/registries.conf","TMPDIR=/tmp","HOME=/var/lib/easyenclave","USER=root","LOGNAME=root","PODMAN_IGNORE_CGROUPSV1_WARNING=1"],"app_name":"podman-http"}]
 EECONF
 
 echo "smoke:azure: create TDX VM $VM_NAME ($VM_SIZE in $REGION)"
@@ -411,16 +518,16 @@ if $ALL_DONE; then
     VM_IP=$(az network public-ip show \
         --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" \
         --query ipAddress -o tsv)
-    echo "smoke:azure: probing http://$VM_IP:80/"
-    for i in $(seq 1 12); do
+    echo "smoke:azure: probing http://$VM_IP:8080/_ping"
+    for i in $(seq 1 60); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' \
-            --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo 000)
+            --connect-timeout 5 "http://$VM_IP:8080/_ping" 2>/dev/null || echo 000)
         if [ "$code" = "200" ]; then
             echo "smoke:azure:   ✓ workload_http (200)"
             HTTP_OK=true
             break
         fi
-        echo "smoke:azure: http $code, retrying... ($i/12)"
+        echo "smoke:azure: http $code, retrying... ($i/60)"
         sleep 5
     done
 fi

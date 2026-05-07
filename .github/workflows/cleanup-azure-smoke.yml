@@ -6,16 +6,16 @@ name: Cleanup Azure smoke orphans
 # (runner hard-kill, cleanup exception, future naming-drift) before
 # they pile up against the WestUS3 Regional Cores quota.
 #
-# Safe to run any time: the 2-hour age threshold is well past the
-# ~25-min smoke budget, so an in-flight job's resources won't be
-# swept out from under it.
+# Safe to run any time: the 30-minute age threshold is past the
+# normal smoke budget, so an in-flight job's resources won't be swept
+# out from under it.
 
 on:
   schedule:
-    # 12:00 UTC daily. Once per day is plenty — each smoke run creates
-    # ~7 resources and at steady state zero should survive past the
-    # trap cleanup. The cron is a safety net, not the primary path.
-    - cron: '0 12 * * *'
+    # Hourly: the smoke script does preflight cleanup, but this keeps
+    # quota clear even if no follow-up smoke job starts after a runner
+    # hard-kill or cancellation.
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 # Serialize: if cron + a manual dispatch collide, one waits.
@@ -39,48 +39,123 @@ jobs:
       - name: Sweep stale ee-smoke-* resources
         env:
           AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          AZURE_STORAGE_ACCT: ${{ secrets.AZURE_STORAGE_ACCT }}
+          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
+          AZURE_GALLERY: ${{ secrets.AZURE_GALLERY }}
+          AZURE_IMG_DEF: ${{ secrets.AZURE_IMG_DEF }}
         run: |
           set -euo pipefail
-          threshold=$(( $(date +%s) - 7200 ))
+          smoke_prefix="${AZURE_SMOKE_PREFIX:-ee-smoke-}"
+          stale_after_seconds="${AZURE_SMOKE_STALE_AFTER_SECONDS:-1800}"
+          gallery_name="${AZURE_GALLERY:-easyenclaveGallery}"
+          image_def_name="${AZURE_IMG_DEF:-easyenclave-mini-x64}"
+          storage_acct="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}" | sha256sum | cut -c1-16)}"
+          storage_container="${AZURE_STORAGE_CONTAINER:-vhds}"
+          threshold=$(( $(date +%s) - stale_after_seconds ))
           echo "cleanup: threshold=$threshold ($(date -u -d @$threshold '+%Y-%m-%dT%H:%MZ'))"
 
-          # Resource names follow ee-smoke-${SHA12}-${STAMP}-{suffix}
-          # from image/ci-tdx-smoke-azure.sh. Field 4 (dash-split) is
-          # the unix epoch stamp; compare against the 2h threshold.
-          # Using the embedded stamp (rather than Azure's
-          # properties.timeCreated, which isn't uniform across resource
-          # types) keeps this deterministic and auditable.
-          az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
-              --query "[?starts_with(name, 'ee-smoke-')].{name:name, id:id}" \
-              -o json > /tmp/resources.json
-          total=$(jq 'length' /tmp/resources.json)
-          echo "cleanup: found $total ee-smoke-* resources total"
+          run_stamp_from_name() {
+            local name="$1"
+            local rest sha stamp suffix
+            rest="${name#"$smoke_prefix"}"
+            IFS=- read -r sha stamp suffix <<< "$rest"
+            case "$stamp" in
+              ''|*[!0-9]*) return 1 ;;
+            esac
+            printf '%s\n' "$stamp"
+          }
 
-          jq -r --argjson t "$threshold" '
-            .[]
-            | select(((.name | split("-"))[3] // "0") | tonumber < $t)
-            | "\(.id)\t\(.name)"
-          ' /tmp/resources.json > /tmp/stale.tsv
+          stale_run_prefixes() {
+            local name stamp rest sha
+            az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+                --query "[?starts_with(name, '${smoke_prefix}')].name" -o tsv \
+              | while IFS= read -r name; do
+                  stamp="$(run_stamp_from_name "$name" || true)"
+                  [ -n "$stamp" ] || continue
+                  [ "$stamp" -lt "$threshold" ] || continue
+                  rest="${name#"$smoke_prefix"}"
+                  sha="${rest%%-*}"
+                  printf '%s%s-%s\n' "$smoke_prefix" "$sha" "$stamp"
+                done | sort -u
+          }
 
-          stale=$(wc -l < /tmp/stale.tsv)
-          echo "cleanup: $stale are older than 2h (will be deleted)"
-          cat /tmp/stale.tsv | sed 's/^/  [stale] /'
+          delete_run_resources() {
+            local run_prefix="$1"
+            local vm_names vm ids id pass
+            echo "cleanup: deleting resources for ${run_prefix}-*"
 
-          if [ "$stale" -eq 0 ]; then
-            echo "cleanup: nothing to do"
-            exit 0
+            vm_names=$(az vm list --resource-group "$AZURE_RESOURCE_GROUP" \
+                --query "[?starts_with(name, '${run_prefix}')].name" -o tsv || true)
+            while IFS= read -r vm; do
+              [ -n "$vm" ] || continue
+              echo "cleanup: delete vm $vm"
+              az vm delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$vm" --yes || true
+            done <<< "$vm_names"
+
+            for pass in 1 2 3; do
+              ids=$(az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+                  --query "[?starts_with(name, '${run_prefix}')].id" -o tsv || true)
+              [ -n "$ids" ] || return 0
+              echo "cleanup: generic sweep pass $pass for ${run_prefix}-*"
+              while IFS= read -r id; do
+                [ -n "$id" ] || continue
+                az resource delete --ids "$id" --verbose || true
+              done <<< "$ids"
+              sleep 10
+            done
+          }
+
+          prune_image_versions() {
+            local versions version stamp
+            if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
+                --gallery-name "$gallery_name" --gallery-image-definition "$image_def_name" >/dev/null 2>&1; then
+              return 0
+            fi
+            versions=$(az sig image-version list --resource-group "$AZURE_RESOURCE_GROUP" \
+                --gallery-name "$gallery_name" --gallery-image-definition "$image_def_name" \
+                --query "[].name" -o tsv || true)
+            while IFS= read -r version; do
+              [ -n "$version" ] || continue
+              stamp="${version##*.}"
+              case "$stamp" in
+                ''|*[!0-9]*) continue ;;
+              esac
+              [ "$stamp" -lt "$threshold" ] || continue
+              echo "cleanup: delete stale image version $version"
+              az sig image-version delete --resource-group "$AZURE_RESOURCE_GROUP" \
+                  --gallery-name "$gallery_name" --gallery-image-definition "$image_def_name" \
+                  --gallery-image-version "$version" --no-wait || true
+            done <<< "$versions"
+          }
+
+          prune_blobs() {
+            local acct_key blobs blob stamp
+            acct_key=$(az storage account keys list --resource-group "$AZURE_RESOURCE_GROUP" \
+                --account-name "$storage_acct" --query '[0].value' -o tsv 2>/dev/null || true)
+            [ -n "$acct_key" ] || return 0
+            blobs=$(az storage blob list --account-name "$storage_acct" \
+                --container-name "$storage_container" --account-key "$acct_key" \
+                --query "[?starts_with(name, '${smoke_prefix}')].name" -o tsv || true)
+            while IFS= read -r blob; do
+              [ -n "$blob" ] || continue
+              stamp="$(run_stamp_from_name "$blob" || true)"
+              [ -n "$stamp" ] || continue
+              [ "$stamp" -lt "$threshold" ] || continue
+              echo "cleanup: delete stale blob $blob"
+              az storage blob delete --account-name "$storage_acct" \
+                  --container-name "$storage_container" --name "$blob" \
+                  --account-key "$acct_key" || true
+            done <<< "$blobs"
+          }
+
+          stale_prefixes="$(stale_run_prefixes || true)"
+          if [ -z "$stale_prefixes" ]; then
+            echo "cleanup: no stale ${smoke_prefix}* resource prefixes"
+          else
+            while IFS= read -r stale_prefix; do
+              [ -n "$stale_prefix" ] || continue
+              delete_run_resources "$stale_prefix"
+            done <<< "$stale_prefixes"
           fi
-
-          # --verbose so each delete's ARM response is visible in the
-          # run log. Continue on individual failures (|| true at the
-          # xargs level would swallow them — instead, let the batch
-          # fail if ALL deletes fail, but the set +e inside the loop
-          # means one failure doesn't stop the rest).
-          set +e
-          failed=0
-          while IFS=$'\t' read -r id name; do
-            echo "cleanup: deleting $name"
-            az resource delete --ids "$id" --verbose || failed=$((failed + 1))
-          done < /tmp/stale.tsv
-          echo "cleanup: complete ($((stale - failed))/$stale succeeded, $failed failed)"
-          [ "$failed" -eq "$stale" ] && exit 1 || exit 0
+          prune_image_versions
+          prune_blobs
