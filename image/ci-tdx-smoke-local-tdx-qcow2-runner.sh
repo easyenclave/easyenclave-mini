@@ -42,7 +42,7 @@ done
 CONFIG_DIR=$(mktemp -d)
 cat > "$CONFIG_DIR/agent.env" <<'EECONF'
 EE_OWNER=ci-smoke-local-tdx-qcow2
-EE_BOOT_WORKLOADS=[{"cmd":["sh","-c","echo ok > /tmp/index.html"],"app_name":"seed"},{"cmd":["busybox","httpd","-f","-p","80","-h","/tmp"],"app_name":"http"}]
+EE_BOOT_WORKLOADS=[{"github_release":{"repo":"mgoltzsche/podman-static","asset":"podman-linux-amd64.tar.gz","tag":"v5.8.2","rename":"podman-linux-amd64/usr/local/bin/podman"},"cmd":["podman","--tmpdir","/run/libpod/tmp","--root","/var/lib/easyenclave/containers/storage","--runroot","/run/containers/storage","--storage-driver","vfs","--events-backend","file","--cgroup-manager","cgroupfs","--conmon","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/conmon","--runtime","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin/crun","--network-cmd-path","/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/lib/podman/netavark","run","--rm","--pull=always","--network","host","--cgroups","disabled","docker.io/library/nginx:alpine"],"env":["PATH=/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/bin:/var/lib/easyenclave/bin/podman-linux-amd64/usr/local/libexec/podman:/usr/local/bin:/usr/bin:/bin","CONTAINERS_CONF=/etc/easyenclave/podman-smoke-containers.conf","CONTAINERS_STORAGE_CONF=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/storage.conf","REGISTRIES_CONFIG_PATH=/var/lib/easyenclave/bin/podman-linux-amd64/etc/containers/registries.conf","TMPDIR=/tmp","PODMAN_IGNORE_CGROUPSV1_WARNING=1"],"app_name":"podman-http"}]
 EECONF
 CONFIG_ISO=$(mktemp --suffix=.iso)
 genisoimage -quiet -o "$CONFIG_ISO" -V CONFIG -r -J "$CONFIG_DIR/agent.env"
@@ -152,7 +152,7 @@ done
 HTTP_OK=false
 if $ALL_DONE; then
     echo "local-tdx-smoke: probing http://localhost:${HOST_PORT}/"
-    for i in $(seq 1 12); do
+    for i in $(seq 1 60); do
         code=$(curl -sS -o /dev/null -w '%{http_code}' \
             --connect-timeout 5 "http://localhost:${HOST_PORT}/" 2>/dev/null || echo 000)
         if [ "$code" = "200" ]; then
@@ -160,8 +160,8 @@ if $ALL_DONE; then
             HTTP_OK=true
             break
         fi
-        echo "local-tdx-smoke: http $code, retrying... ($i/12)"
-        sleep 2
+        echo "local-tdx-smoke: http $code, retrying... ($i/60)"
+        sleep 5
     done
 fi
 
