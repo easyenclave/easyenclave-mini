@@ -3,6 +3,50 @@
 ## TDX measurement tracking
 Build-time: capture MRTD + RTMR values for each release artifact, target profile, and launch topology. Registration-time: verify agent quotes against expected measurements. Sealing: encrypt secrets to measured state.
 
+## Remove BusyBox and initrd helper utilities
+Move boot-time userspace into `easyenclave` itself so the final image and
+initrd do not depend on BusyBox applets or `veritysetup`.
+
+Current dependency split:
+
+- The final rootfs no longer installs `busybox-static` or BusyBox applet
+  symlinks. Runtime smoke workloads use `easyenclave smoke-http` instead of
+  `sh -c` and `busybox httpd`.
+- The initrd builder still copies BusyBox and symlinks applets for shell init,
+  module loading, root discovery, networking, DHCP, metadata fetches, and
+  config parsing.
+- The initrd also copies `veritysetup` when available, but native dm-verity
+  activation is required before the helper-utility removal is complete.
+
+Migration order:
+
+1. Done: remove BusyBox from the final rootfs first. Smoke-test workloads use
+   the dedicated `easyenclave smoke-http` mode.
+2. Done: stop installing BusyBox applet symlinks in `mkosi.postinst.chroot`
+   and remove `busybox-static` from `mkosi.conf`.
+3. Done: add an inert `easyenclave initrd --probe-only` mode and copy the
+   release binary plus required dynamic libraries into the initrd while the
+   existing shell `/init` remains the boot authority.
+4. Make dm-verity image generation explicit: create the hash metadata during
+   image assembly, persist the root hash as an artifact, and pass the data
+   device, hash device, and `roothash=` in each target's UKI cmdline.
+5. Implement native dm-verity activation in `easyenclave initrd` using
+   device-mapper ioctls. Create and resume the `verity-root` mapper device,
+   then mount `/dev/mapper/verity-root` read-only.
+6. Port the root strategy from `image/init-templates/ext4-label.sh` into
+   Rust: mount `/proc`, `/sys`, and `/dev`; parse kernel cmdline; load the
+   required storage and attestation modules; resolve `LABEL=`/`UUID=` roots;
+   mount tmpfs overlays; write `/run/easyenclave/env`; move virtual
+   filesystems; and `switch_root` into `/sbin/init`.
+7. Port vendor stages into Rust. Preserve the current contracts for static IP
+   overrides, DHCP, GCP `ee-config`, Azure `userData`/`customData`, qemu
+   config disks, flat JSON compatibility, and `KEY=VALUE` env merging.
+8. Remove BusyBox from `mkinitrd.sh` after Rust owns root setup and vendor
+   setup.
+9. Remove `veritysetup` from `mkinitrd.sh`. Completion means the initrd
+   contains `easyenclave`, kernel modules, and only the files required by the
+   kernel/module/root strategy.
+
 ## Canonical local launch workflow
 The README now points at build artifacts, but the current working tree has no local launcher script. Decide whether to restore a QEMU/libvirt helper or document exact external launch commands for `gcp` qcow2 and `local-tdx` ISO, including config-disk handling.
 

@@ -8,11 +8,17 @@ mod socket;
 mod workload;
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
+    if maybe_run_subcommand() {
+        return;
+    }
+
     // 1. PID 1 init (mount filesystems, parse kernel cmdline, reap zombies)
     init::maybe_init();
 
@@ -157,4 +163,161 @@ fn mint_boot_token() -> String {
         }
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn maybe_run_subcommand() -> bool {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("initrd") => {
+            run_initrd_probe(args.collect()).unwrap_or_else(|e| {
+                eprintln!("easyenclave initrd: {e}");
+                std::process::exit(1);
+            });
+            true
+        }
+        Some("smoke-http") => {
+            let opts = parse_smoke_http_args(args.collect()).unwrap_or_else(|e| {
+                eprintln!("easyenclave smoke-http: {e}");
+                std::process::exit(2);
+            });
+            run_smoke_http(opts).unwrap_or_else(|e| {
+                eprintln!("easyenclave smoke-http: {e}");
+                std::process::exit(1);
+            });
+            true
+        }
+        Some("--help") | Some("-h") => {
+            print_usage();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn run_initrd_probe(args: Vec<String>) -> Result<(), String> {
+    for arg in &args {
+        match arg.as_str() {
+            "--probe-only" => {}
+            "--help" | "-h" => {
+                print_initrd_usage();
+                return Ok(());
+            }
+            other => return Err(format!("unknown initrd argument {other:?}")),
+        }
+    }
+
+    let cmdline =
+        std::fs::read_to_string("/proc/cmdline").map_err(|e| format!("read /proc/cmdline: {e}"))?;
+    let mut root = None;
+    let mut roothash = None;
+    let mut verity_root_data = None;
+    let mut verity_root_hash = None;
+    let mut ee_params = 0usize;
+
+    for param in cmdline.split_whitespace() {
+        if let Some(value) = param.strip_prefix("root=") {
+            root = Some(value);
+        } else if let Some(value) = param.strip_prefix("roothash=") {
+            roothash = Some(value);
+        } else if let Some(value) = param.strip_prefix("systemd.verity_root_data=") {
+            verity_root_data = Some(value);
+        } else if let Some(value) = param.strip_prefix("systemd.verity_root_hash=") {
+            verity_root_hash = Some(value);
+        } else if param.starts_with("ee.") {
+            ee_params += 1;
+        }
+    }
+
+    eprintln!("easyenclave initrd: probe-only mode");
+    eprintln!("easyenclave initrd: root={}", root.unwrap_or("<unset>"));
+    eprintln!(
+        "easyenclave initrd: systemd.verity_root_data={}",
+        verity_root_data.unwrap_or("<unset>")
+    );
+    eprintln!(
+        "easyenclave initrd: systemd.verity_root_hash={}",
+        verity_root_hash.unwrap_or("<unset>")
+    );
+    eprintln!(
+        "easyenclave initrd: roothash={}",
+        roothash.unwrap_or("<unset>")
+    );
+    eprintln!("easyenclave initrd: ee_params={ee_params}");
+    Ok(())
+}
+
+struct SmokeHttpOptions {
+    port: u16,
+    body: String,
+}
+
+fn parse_smoke_http_args(args: Vec<String>) -> Result<SmokeHttpOptions, String> {
+    let mut port = 80u16;
+    let mut body = "ok\n".to_string();
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                let value = args.get(i).ok_or("--port requires a value")?;
+                port = value
+                    .parse::<u16>()
+                    .map_err(|e| format!("invalid --port value {value:?}: {e}"))?;
+            }
+            "--body" => {
+                i += 1;
+                body = args.get(i).ok_or("--body requires a value")?.clone();
+            }
+            "--help" | "-h" => {
+                print_smoke_http_usage();
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown smoke-http argument {other:?}")),
+        }
+        i += 1;
+    }
+    Ok(SmokeHttpOptions { port, body })
+}
+
+fn run_smoke_http(opts: SmokeHttpOptions) -> Result<(), String> {
+    let listener = TcpListener::bind(("0.0.0.0", opts.port))
+        .map_err(|e| format!("bind 0.0.0.0:{}: {e}", opts.port))?;
+    eprintln!("easyenclave smoke-http: listening on 0.0.0.0:{}", opts.port);
+
+    for conn in listener.incoming() {
+        let mut stream = match conn {
+            Ok(stream) => stream,
+            Err(e) => {
+                eprintln!("easyenclave smoke-http: accept failed: {e}");
+                continue;
+            }
+        };
+
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            opts.body.len(),
+            opts.body
+        );
+        if let Err(e) = stream.write_all(response.as_bytes()) {
+            eprintln!("easyenclave smoke-http: write failed: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+fn print_usage() {
+    eprintln!(
+        "usage: easyenclave [initrd [--probe-only] | smoke-http [--port PORT] [--body BODY]]"
+    );
+}
+
+fn print_initrd_usage() {
+    eprintln!("usage: easyenclave initrd [--probe-only]");
+}
+
+fn print_smoke_http_usage() {
+    eprintln!("usage: easyenclave smoke-http [--port PORT] [--body BODY]");
 }
