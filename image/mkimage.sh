@@ -5,7 +5,7 @@
 #
 # Inputs expected in <output-dir>:
 #   easyenclave.efi        (UKI; always required)
-#   easyenclave.rootfs/    (mkosi-populated directory; for disk format)
+#   easyenclave.rootfs/    (EE-owned rootfs directory; for disk format)
 #
 # Outputs depend on TARGET_FORMAT:
 #   disk → rootfs.img (ext4), easyenclave.root.raw (GPT disk),
@@ -34,7 +34,8 @@ case "$TARGET_FORMAT" in
         # 1. Pack the rootfs tree into a plain ext4 image.
         ROOTFS_IMG="$OUT/rootfs.img"
         rm -f "$ROOTFS_IMG"
-        dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=256 status=none
+        ROOTFS_MB="${TARGET_ROOTFS_MB:-32}"
+        dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count="$ROOTFS_MB" status=none
         sudo mkfs.ext4 -F -L root -d "$ROOTFS_DIR" "$ROOTFS_IMG" 2>&1 | tail -3
 
         # 2. Assemble GPT disk: ESP (with UKI) + rootfs.

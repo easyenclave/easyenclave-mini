@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a minimal initrd for easyenclave VMs, profile-driven.
 # Just enough to: load the target's modules, mount its root, switch_root.
-# ~2-5MB instead of mkosi's default ~300MB systemd initrd.
+# ~2-8MB instead of a general-purpose distro initrd.
 #
 # Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>
 #
@@ -81,7 +81,7 @@ done
 # Ship easyenclave in the initrd before it owns boot. The shell /init is
 # still authoritative, but `easyenclave initrd --probe-only` can run in the
 # same early userspace that later Rust initrd work will replace.
-EE_INITRD_BIN="${EE_INITRD_BIN:-$SCRIPT_DIR/mkosi.extra/usr/local/bin/easyenclave}"
+EE_INITRD_BIN="${EE_INITRD_BIN:-$SCRIPT_DIR/ee.extra/usr/local/bin/easyenclave}"
 if [ -x "$EE_INITRD_BIN" ]; then
     copy_elf_with_libs "$EE_INITRD_BIN" "$WORKDIR/bin/easyenclave"
 else
@@ -194,7 +194,7 @@ if [ -n "$VENDOR_SCRIPT" ]; then
         exit 1
     fi
 
-    HOOK_SRC="$SCRIPT_DIR/mkosi.extra/usr/share/udhcpc/default.script"
+    HOOK_SRC="$SCRIPT_DIR/ee.extra/usr/share/udhcpc/default.script"
     if [ -f "$HOOK_SRC" ]; then
         mkdir -p "$WORKDIR/usr/share/udhcpc"
         cp "$HOOK_SRC" "$WORKDIR/usr/share/udhcpc/default.script"

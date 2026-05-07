@@ -48,7 +48,7 @@ ee_ifup() {
         # /tmp/resolv.conf.udhcpc (and tries /run/resolv.conf, which fails
         # silently — see below). Both paths live in the *initrd* fs and
         # are wiped by switch_root, so the newroot's /etc/resolv.conf
-        # (symlinked to /run/resolv.conf by mkosi.postinst.chroot) ends
+        # (symlinked to /run/resolv.conf by mkrootfs-ee.sh) ends
         # up pointing at an empty tmpfs. Splice the hook's output into
         # $NEWROOT/run so it survives the switch.
         #

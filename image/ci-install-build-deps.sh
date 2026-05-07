@@ -32,7 +32,7 @@ printf ' %s' "${kernel_pkgs[@]}"
 printf '\n'
 
 sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
+    systemd-boot-efi systemd-ukify mtools cryptsetup-bin musl-tools \
     busybox-static e2fsprogs dosfstools qemu-utils \
     zstd "${kernel_pkgs[@]}"
 
