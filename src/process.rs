@@ -165,16 +165,17 @@ pub async fn read_logs(app_name: &str, tail: usize) -> Result<Vec<String>, Strin
 
 /// Kill a process by PID (SIGTERM then SIGKILL).
 pub async fn kill_process(pid: u32) -> Result<(), String> {
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .output()
-        .await;
+    signal_process(pid, libc::SIGTERM);
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let _ = Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .output()
-        .await;
+    signal_process(pid, libc::SIGKILL);
     Ok(())
+}
+
+fn signal_process(pid: u32, signal: libc::c_int) {
+    if pid == 0 || pid > libc::pid_t::MAX as u32 {
+        return;
+    }
+    unsafe {
+        libc::kill(pid as libc::pid_t, signal);
+    }
 }

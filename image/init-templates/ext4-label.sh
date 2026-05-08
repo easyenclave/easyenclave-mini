@@ -71,7 +71,15 @@ esac
 echo "Resolved root to $ROOT_DATA"
 [ -e "$ROOT_DATA" ] || { echo "FATAL: $ROOT_DATA not found after 30s"; ls /dev/nvme* /dev/vd* /dev/sd* 2>/dev/null; exec /bin/sh; }
 
-if [ -n "$ROOTHASH" ] && [ -n "$ROOT_DATA" ] && [ -n "$ROOT_HASH" ] && command -v veritysetup >/dev/null; then
+if [ -n "$ROOTHASH" ] || [ -n "$ROOT_HASH" ]; then
+    if [ -z "$ROOTHASH" ] || [ -z "$ROOT_DATA" ] || [ -z "$ROOT_HASH" ]; then
+        echo "FATAL: incomplete dm-verity cmdline; need root/systemd.verity_root_data, systemd.verity_root_hash, and roothash"
+        exec /bin/sh
+    fi
+    if ! command -v veritysetup >/dev/null; then
+        echo "FATAL: dm-verity requested but veritysetup is not in this initrd"
+        exec /bin/sh
+    fi
     veritysetup open "$ROOT_DATA" verity-root "$ROOT_HASH" "$ROOTHASH" || {
         echo "FATAL: dm-verity setup failed"
         exec /bin/sh

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a minimal initrd for easyenclave VMs, profile-driven.
 # Just enough to: load the target's modules, mount its root, switch_root.
-# ~2-5MB instead of mkosi's default ~300MB systemd initrd.
+# ~2-8MB instead of a general-purpose distro initrd.
 #
 # Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>
 #
@@ -45,6 +45,18 @@ WORKDIR=$(mktemp -d)
 trap "rm -rf $WORKDIR" EXIT
 
 mkdir -p "$WORKDIR"/{bin,sbin,lib,lib64,dev,proc,sys,tmp,mnt/root,etc}
+
+copy_elf_with_libs() {
+    local src="$1"
+    local dst="$2"
+    install -D -m 0755 "$src" "$dst"
+    while read -r lib; do
+        [ -n "$lib" ] || continue
+        local lib_dst="$WORKDIR/$lib"
+        mkdir -p "$(dirname "$lib_dst")"
+        cp -n "$lib" "$lib_dst" 2>/dev/null || true
+    done < <(ldd "$src" 2>/dev/null | grep -o '/[^ ]*' || true)
+}
 
 # Busybox as the userspace (static, ~1MB)
 if command -v busybox >/dev/null 2>&1; then
@@ -142,17 +154,10 @@ echo "=== modules.dep ==="
 cat "$MODDIR/modules.dep" 2>/dev/null || echo "(missing)"
 echo "==="
 
-# veritysetup for dm-verity (from cryptsetup-bin). Only meaningful for
-# strategies that use dm-verity (ext4-label does; other strategies
-# doesn't). Copying unconditionally adds ~200KB + libs; cheap insurance.
-if command -v veritysetup >/dev/null 2>&1; then
-    cp "$(which veritysetup)" "$WORKDIR/sbin/"
-    # Copy its library deps
-    ldd "$(which veritysetup)" 2>/dev/null | grep -o '/[^ ]*' | while read -r lib; do
-        dir="$WORKDIR/$(dirname "$lib")"
-        mkdir -p "$dir"
-        cp -n "$lib" "$dir/" 2>/dev/null || true
-    done
+# veritysetup for dm-verity (from cryptsetup-bin). This pulls in a large
+# OpenSSL/libcryptsetup stack, so targets must opt in explicitly.
+if [ "${TARGET_ENABLE_VERITY:-0}" = "1" ] && command -v veritysetup >/dev/null 2>&1; then
+    copy_elf_with_libs "$(which veritysetup)" "$WORKDIR/sbin/veritysetup"
 fi
 
 # Install the profile-specified init template.
@@ -178,7 +183,7 @@ if [ -n "$VENDOR_SCRIPT" ]; then
         exit 1
     fi
 
-    HOOK_SRC="$SCRIPT_DIR/mkosi.extra/usr/share/udhcpc/default.script"
+    HOOK_SRC="$SCRIPT_DIR/ee.extra/usr/share/udhcpc/default.script"
     if [ -f "$HOOK_SRC" ]; then
         mkdir -p "$WORKDIR/usr/share/udhcpc"
         cp "$HOOK_SRC" "$WORKDIR/usr/share/udhcpc/default.script"
