@@ -1,3 +1,23 @@
+[workspace]
+# `easyenclave` (this package, rootfs PID 1) + `ee-init` (the static-musl
+# initramfs PID 1 that replaces the old busybox/shell initrd). Two crates so
+# `ee-init` gets a tiny, tokio-free dependency graph and its own build target.
+members = ["image/init"]
+resolver = "2"
+
+# Size-tuned profile for the initramfs binary only — selected explicitly with
+# `cargo build -p ee-init --profile release-min`. Cargo profiles are
+# workspace-global, so we use a custom profile here rather than mutating
+# [profile.release] (which would force panic=abort onto the main runtime, where
+# a panicking task must not abort PID 1).
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [package]
 name = "easyenclave"
 version = "0.3.0"
@@ -15,8 +35,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # flate2 + tar: extracting .tar.gz release assets from GitHub.
 flate2 = "1"
 tar = "0.4"
-futures-util = "0.3"
 libc = "0.2"
+# nix: openpty for tty workloads + attach sessions (replaces the busybox
+# `script` shell-out). `term` gates the pty module.
+nix = { version = "0.29", features = ["term"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "net", "io-util", "sync"] }

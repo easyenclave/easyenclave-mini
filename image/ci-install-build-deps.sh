@@ -31,9 +31,12 @@ printf 'kernel packages:'
 printf ' %s' "${kernel_pkgs[@]}"
 printf '\n'
 
+# No busybox-static (the initrd ships the static ee-init; the rootfs uses
+# easyenclave's multicall sh/httpd) and no cryptsetup-bin (dm-verity deferred).
+# musl-tools provides the linker for the static ee-init build.
 sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
-    busybox-static e2fsprogs dosfstools qemu-utils \
+    systemd-boot-efi systemd-ukify mtools musl-tools \
+    e2fsprogs dosfstools qemu-utils \
     zstd "${kernel_pkgs[@]}"
 
 KVER=$(ls -1 /boot/vmlinuz-*-"$KERNEL_FLAVOR" 2>/dev/null \

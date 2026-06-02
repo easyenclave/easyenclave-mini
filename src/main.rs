@@ -1,9 +1,12 @@
 mod attestation;
 mod capture;
 mod config;
+mod httpd;
 mod init;
 mod process;
+mod pty;
 mod release;
+mod sh;
 mod socket;
 mod workload;
 
@@ -11,8 +14,31 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[tokio::main]
-async fn main() {
+/// Multicall entry. Symlinked into the rootfs as `/bin/sh` and
+/// `/usr/local/bin/httpd`, this one binary also provides the minimal shell and
+/// static file server that used to come from busybox — dispatched by `argv[0]`
+/// (busybox-style). Anything else runs the easyenclave runtime on a tokio
+/// runtime. Applets run synchronously with no async runtime.
+fn main() {
+    let arg0 = std::env::args().next().unwrap_or_default();
+    let applet = std::path::Path::new(&arg0)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    match applet {
+        "sh" | "ash" => std::process::exit(sh::main(std::env::args().skip(1).collect())),
+        "httpd" => std::process::exit(httpd::main(std::env::args().skip(1).collect())),
+        _ => {}
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(run());
+}
+
+async fn run() {
     // 1. PID 1 init (mount filesystems, parse kernel cmdline, reap zombies)
     init::maybe_init();
 
@@ -145,6 +171,12 @@ async fn main() {
 /// and is always available on Linux 3.17+.
 fn mint_boot_token() -> String {
     let mut buf = [0u8; 32];
+    fill_random(&mut buf);
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn fill_random(buf: &mut [u8]) {
     unsafe {
         let mut got = 0usize;
         while got < buf.len() {
@@ -156,5 +188,14 @@ fn mint_boot_token() -> String {
             got += n as usize;
         }
     }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// Dev-host fallback (macOS has no libc::getrandom) so the crate builds and
+// tests off-target; PID 1 only ever runs on Linux.
+#[cfg(not(target_os = "linux"))]
+fn fill_random(buf: &mut [u8]) {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(buf))
+        .expect("read /dev/urandom");
 }

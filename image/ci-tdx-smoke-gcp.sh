@@ -57,7 +57,7 @@ gcloud compute images create "$IMAGE_NAME" \
 cat > /tmp/ee-config.json <<'EECONF'
 {
   "EE_OWNER": "ci-smoke",
-  "EE_BOOT_WORKLOADS": "[{\"cmd\":[\"sh\",\"-c\",\"echo ok > /tmp/index.html\"],\"app_name\":\"seed\"},{\"cmd\":[\"busybox\",\"httpd\",\"-f\",\"-p\",\"80\",\"-h\",\"/tmp\"],\"app_name\":\"http\"}]"
+  "EE_BOOT_WORKLOADS": "[{\"cmd\":[\"sh\",\"-c\",\"echo ok > /tmp/index.html\"],\"app_name\":\"seed\"},{\"cmd\":[\"httpd\",\"-p\",\"80\",\"-h\",\"/tmp\"],\"app_name\":\"http\"}]"
 }
 EECONF
 

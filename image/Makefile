@@ -16,8 +16,9 @@
 #   5. ukify → UKI                               (per-target cmdline)
 #   6. mkimage.sh <profile>                      (per-target format: disk or iso)
 #
-# Prerequisites: mkosi 25+, cargo, busybox-static, e2fsprogs, mtools,
-#   systemd-boot-efi (for the EFI stub), systemd-ukify, qemu-utils (qcow2)
+# Prerequisites: mkosi 25+, cargo + the x86_64-unknown-linux-musl target
+#   (for the static ee-init), e2fsprogs, mtools, systemd-boot-efi (for the
+#   EFI stub), systemd-ukify, qemu-utils (qcow2), zstd
 #
 # Usage:
 #   make build                          # default TARGET=gcp
@@ -29,6 +30,11 @@
 REPO_ROOT := ..
 EXTRA_BIN := mkosi.extra/usr/local/bin
 EE_BIN := $(REPO_ROOT)/target/release/easyenclave
+# Static initramfs PID 1 (replaces busybox + the shell initrd). Built for musl
+# so /init is a fully static ELF with no loader/libs; size-tuned release-min
+# profile (defined in the workspace root Cargo.toml).
+MUSL_TARGET := x86_64-unknown-linux-musl
+EE_INIT := $(REPO_ROOT)/target/$(MUSL_TARGET)/release-min/ee-init
 EFI_STUB := /usr/lib/systemd/boot/efi/linuxx64.efi.stub
 KVER ?= $(shell uname -r)
 
@@ -39,7 +45,7 @@ ROOTFS_DIR := $(OUTPUT_DIR)/easyenclave.rootfs
 
 .PHONY: build clean clean-all
 
-build: $(EXTRA_BIN)/easyenclave
+build: $(EXTRA_BIN)/easyenclave $(EE_INIT)
 	@[ -f $(PROFILE) ] || { echo "Unknown TARGET=$(TARGET). Available: $$(ls targets/ 2>/dev/null)"; exit 1; }
 	chmod +x mkosi.postinst.chroot mkosi.finalize mkinitrd.sh mkimage.sh assemble-disk.sh lib/mkesp.sh
 	mkdir -p $(OUTPUT_DIR)
@@ -58,8 +64,8 @@ build: $(EXTRA_BIN)/easyenclave
 	sudo mv easyenclave $(ROOTFS_DIR)
 	# 3. Per-target kernel cmdline.
 	. $(PROFILE); echo "$$TARGET_CMDLINE" > $(OUTPUT_DIR)/easyenclave.cmdline
-	# 4. Per-target initrd (profile-driven modules + init template).
-	sudo bash mkinitrd.sh $(OUTPUT_DIR)/easyenclave.initrd $(KVER) $(PROFILE)
+	# 4. Per-target initrd (profile-driven modules + static ee-init as /init).
+	sudo bash mkinitrd.sh $(OUTPUT_DIR)/easyenclave.initrd $(KVER) $(PROFILE) $(EE_INIT)
 	# 5. Host kernel.
 	sudo cp /boot/vmlinuz-$(KVER) $(OUTPUT_DIR)/easyenclave.vmlinuz
 	sudo chmod 644 $(OUTPUT_DIR)/easyenclave.vmlinuz
@@ -79,6 +85,11 @@ build: $(EXTRA_BIN)/easyenclave
 $(EE_BIN):
 	cargo build --manifest-path $(REPO_ROOT)/Cargo.toml --release
 
+$(EE_INIT):
+	rustup target add $(MUSL_TARGET)
+	cargo build --manifest-path $(REPO_ROOT)/Cargo.toml -p ee-init \
+		--profile release-min --target $(MUSL_TARGET)
+
 $(EXTRA_BIN)/easyenclave: $(EE_BIN)
 	mkdir -p $(EXTRA_BIN)
 	cp $(EE_BIN) $(EXTRA_BIN)/easyenclave
@@ -86,8 +97,8 @@ $(EXTRA_BIN)/easyenclave: $(EE_BIN)
 
 clean:
 	# Only remove generated staging binaries inside mkosi.extra — the
-	# rest of mkosi.extra (e.g. usr/share/udhcpc/default.script) is
-	# tracked content and must survive `make clean`.
+	# rest of mkosi.extra (e.g. etc/resolv.conf) is tracked content and
+	# must survive `make clean`.
 	sudo rm -f $(EXTRA_BIN)/easyenclave
 	sudo rm -rf $(OUTPUT_DIR) easyenclave
 	sudo mkosi clean 2>/dev/null || true

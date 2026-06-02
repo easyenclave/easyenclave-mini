@@ -42,7 +42,7 @@ done
 CONFIG_DIR=$(mktemp -d)
 cat > "$CONFIG_DIR/agent.env" <<'EECONF'
 EE_OWNER=ci-smoke-local-tdx-qcow2
-EE_BOOT_WORKLOADS=[{"cmd":["sh","-c","echo ok > /tmp/index.html"],"app_name":"seed"},{"cmd":["busybox","httpd","-f","-p","80","-h","/tmp"],"app_name":"http"}]
+EE_BOOT_WORKLOADS=[{"cmd":["sh","-c","echo ok > /tmp/index.html"],"app_name":"seed"},{"cmd":["httpd","-p","80","-h","/tmp"],"app_name":"http"}]
 EECONF
 CONFIG_ISO=$(mktemp --suffix=.iso)
 genisoimage -quiet -o "$CONFIG_ISO" -V CONFIG -r -J "$CONFIG_DIR/agent.env"

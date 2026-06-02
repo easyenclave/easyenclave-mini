@@ -1,9 +1,8 @@
 //! PID 1 init: load the initrd-written env file, mount attestation + pty
 //! filesystems, reap zombies. All vendor-shaped concerns (networking,
 //! metadata fetch, config-disk probing, cmdline parsing, DNS, hostname)
-//! live in the initrd's per-target vendor stage under
-//! `image/init-templates/vendors/<vendor>.sh`, which writes its results
-//! to `/run/easyenclave/env` before `switch_root`.
+//! live in the static `ee-init` initramfs binary (`image/init/`), which
+//! writes its results to `/run/easyenclave/env` before `switch_root`.
 //!
 //! `/run` is a tmpfs mounted by the initrd so the env file survives a
 //! read-only rootfs (the GCP/Azure disk images mount root RO; squashfs
@@ -87,6 +86,7 @@ fn load_env_file() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn nix_mount(src: &str, target: &str, fstype: &str) -> Result<(), String> {
     use std::ffi::CString;
     let _ = std::fs::create_dir_all(target);
@@ -107,4 +107,12 @@ fn nix_mount(src: &str, target: &str, fstype: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+// The runtime only ever runs as PID 1 on Linux; the stub keeps the crate
+// compilable on dev hosts (macOS `libc::mount` has a different signature) so
+// the non-syscall logic — shell, httpd, socket API — can be built and tested.
+#[cfg(not(target_os = "linux"))]
+fn nix_mount(_src: &str, _target: &str, _fstype: &str) -> Result<(), String> {
+    Err("mount() is only supported on Linux".into())
 }

@@ -5,11 +5,9 @@
 //! byte stream bridging a PTY-backed shell.
 
 use serde_json::{json, Value};
-use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::process::Command;
 
 use crate::attestation::AttestationBackend;
 use crate::workload::{DeployRequest, Deployments};
@@ -370,46 +368,42 @@ where
     let full_cmd = cmd.join(" ");
     eprintln!("easyenclave: attach session: {full_cmd}");
 
-    let mut child = match Command::new("script")
-        .arg("-qfc")
-        .arg(&full_cmd)
-        .arg("/dev/null")
-        .env("TERM", "xterm-256color")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
+    // Real PTY (replaces `script -qfc`): the master is bidirectional — reading
+    // it yields the child's combined stdout+stderr, writing it feeds stdin.
+    let program = cmd[0].clone();
+    let args: Vec<&str> = cmd[1..].iter().map(String::as_str).collect();
+    let (mut child, master) = match crate::pty::spawn_on_pty(&program, &args, &[]) {
+        Ok(x) => x,
         Err(e) => {
-            eprintln!("easyenclave: attach: spawn script: {e}");
+            eprintln!("easyenclave: attach: spawn pty: {e}");
             let _ = writer
                 .write_all(format!("\nattach failed: {e}\n").as_bytes())
                 .await;
             return;
         }
     };
-
     let pid = child.id();
-    let mut child_stdin = child.stdin.take().expect("stdin piped");
-    let mut child_stdout = child.stdout.take().expect("stdout piped");
-    let mut child_stderr = child.stderr.take().expect("stderr piped");
+    let master_write = match master.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("easyenclave: attach: clone pty: {e}");
+            let _ = writer
+                .write_all(format!("\nattach failed: {e}\n").as_bytes())
+                .await;
+            return;
+        }
+    };
+    let mut pty_read = tokio::fs::File::from_std(master);
+    let mut pty_write = tokio::fs::File::from_std(master_write);
 
-    // Three concurrent copies. Wrap the writer in an Arc<Mutex<>> so
-    // stdout and stderr can share it without interleaving partial UTF-8
-    // sequences mid-byte. (script(1) usually folds stderr into stdout
-    // anyway, but the stderr leg is cheap insurance.)
-    let writer = std::sync::Arc::new(tokio::sync::Mutex::new(writer));
-
-    let writer_out = writer.clone();
-    let stdout_task = tokio::spawn(async move {
+    // PTY output -> socket.
+    let out_task = tokio::spawn(async move {
         let mut buf = [0u8; 4096];
         loop {
-            match child_stdout.read(&mut buf).await {
+            match pty_read.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let mut w = writer_out.lock().await;
-                    if w.write_all(&buf[..n]).await.is_err() {
+                    if writer.write_all(&buf[..n]).await.is_err() {
                         break;
                     }
                 }
@@ -417,30 +411,15 @@ where
         }
     });
 
-    let writer_err = writer.clone();
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = [0u8; 4096];
-        loop {
-            match child_stderr.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let mut w = writer_err.lock().await;
-                    if w.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    let stdin_task = tokio::spawn(async move {
+    // socket -> PTY input.
+    let in_task = tokio::spawn(async move {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if child_stdin.write_all(&buf[..n]).await.is_err() {
+                    if pty_write.write_all(&buf[..n]).await.is_err() {
                         break;
                     }
                 }
@@ -449,19 +428,17 @@ where
     });
 
     // Wait for the child to exit OR the socket-read side to drop.
-    // Either condition tears the session down.
     tokio::select! {
         _ = child.wait() => {}
-        _ = stdin_task => {}
+        _ = in_task => {}
     }
 
-    // Best-effort: kill the child if it's still around, then drain
-    // stdout/stderr so trailing bytes reach the client.
+    // Best-effort: kill the child if it's still around, then drain remaining
+    // PTY output so trailing bytes reach the client.
     if let Some(p) = pid {
         let _ = crate::process::kill_process(p).await;
     }
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
+    let _ = out_task.await;
     eprintln!("easyenclave: attach session ended ({full_cmd})");
 }
 

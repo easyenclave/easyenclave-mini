@@ -1,0 +1,28 @@
+[package]
+name = "ee-init"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Static initramfs PID 1 for easyenclave sealed VMs. Replaces busybox + the shell initrd."
+
+[[bin]]
+name = "ee-init"
+path = "src/main.rs"
+
+[dependencies]
+# Syscalls: mount/umount/init_module/chroot/exec/netlink sockets. The whole
+# initrd userspace is libc; no busybox, no shelling out. Matches the
+# `libc::mount` style already used in ../../src/init.rs.
+libc = "0.2"
+# Env-merge contract (flat-JSON flatten). `preserve_order` so flattened
+# {string:string} objects emit in source order, matching the awk we replace.
+serde_json = { version = "1", features = ["preserve_order"] }
+# Cloud-metadata (Azure customData is base64). gcp/azure IMDS only.
+base64 = "0.22"
+# No DHCP or HTTP crate: net::dhcp hand-rolls the RFC 2131 DORA over a raw
+# broadcast UDP socket, and net::http hand-rolls a one-shot GET to the fixed
+# IMDS IP. Keeps the dhcproto/trust-dns and ureq/icu trees (and any C
+# cross-compile) out of the initramfs — deps stay libc + serde_json + base64.
+
+[dev-dependencies]
+tempfile = "3"

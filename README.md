@@ -59,10 +59,9 @@ The SSH installer is deliberately split: without `--install-tdx-stack` it only e
 
 ### Adding a new target
 
-1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES`, `TARGET_CMDLINE`, `TARGET_FORMAT`, `TARGET_OUTPUTS`, and `TARGET_VENDOR`).
-2. If you need a new root acquisition strategy, add `image/init-templates/<name>.sh` — it becomes the `/init` inside the initrd.
-3. If the host is a new cloud (or a variant that needs its own metadata/network plumbing), add `image/init-templates/vendors/<vendor>.sh` and set `TARGET_VENDOR=<vendor>` in the profile. The vendor stage gets `$1 = <newroot>`, is expected to load its network driver, bring up DHCP, fetch metadata, and append KEY=VALUE lines to `<newroot>/run/easyenclave/env`.
-4. `make build TARGET=<name>`.
+1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES`, `TARGET_CMDLINE` (including `ee.vendor=<vendor>`), `TARGET_FORMAT`, `TARGET_OUTPUTS`).
+2. If the host is a new cloud (or a variant that needs its own metadata/network plumbing), add a vendor module `image/init/src/vendor/<vendor>.rs` and wire it into `vendor::select`/`run_stage`, then set `ee.vendor=<vendor>` in the profile's `TARGET_CMDLINE`. The vendor stage brings up networking (DHCP), fetches metadata, and appends KEY=VALUE lines to `<newroot>/run/easyenclave/env`. Root acquisition (findfs/mount/switch_root) is shared across targets by `ee-init` itself.
+3. `make build TARGET=<name>`.
 
 ### Attestation across targets
 
@@ -98,7 +97,7 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 | logs | `{"method":"logs","id":"...","tail":100}` | `{"ok":true,"lines":["..."]}` |
 | attach | `{"method":"attach","cmd":["/bin/sh"]}` | `{"ok":true,"attached":true}` then raw byte stream (PTY-backed shell) |
 
-`attest.nonce` is optional base64-encoded caller data. `attach` is the only method that changes the connection's protocol — after the JSON ack, the connection is a raw byte stream bridging a `script -qfc <cmd> /dev/null` PTY. Used by clients that want an interactive shell (dd-client, dd-web).
+`attest.nonce` is optional base64-encoded caller data. `attach` is the only method that changes the connection's protocol — after the JSON ack, the connection is a raw byte stream bridging a PTY (allocated with `openpty`). Used by clients that want an interactive shell (dd-client, dd-web).
 
 For a Java workload example, see
 [`docs/confer-proxy-on-easyenclave.md`](docs/confer-proxy-on-easyenclave.md).
@@ -163,7 +162,7 @@ Config is loaded from `/etc/easyenclave/config.json`, then environment variables
 - Azure IMDS `customData` — base64-encoded. The decoded bytes may be KEY=VALUE per line or legacy flat-JSON (azure vendor stage)
 - the inherited process environment
 
-The Rust binary itself never talks to a metadata service or probes a config disk — all of that is shell code baked into the target's initrd, so the runtime stays vendor-agnostic.
+The rootfs PID 1 binary itself never talks to a metadata service or probes a config disk — all of that lives in the static `ee-init` initramfs binary, so the runtime stays vendor-agnostic.
 
 Example `/etc/easyenclave/config.json`:
 
@@ -200,7 +199,7 @@ Example `/etc/easyenclave/config.json`:
 | `EE_GATEWAY` | (none) | Default gateway when `EE_IP` is set (consumed by vendor stage) |
 | `EE_DNS` | DHCP DNS | DNS server written to `/run/resolv.conf` by the vendor stage |
 
-Networking (interface up, DHCP, DNS) is handled entirely by the vendor stage at `image/init-templates/vendors/<vendor>.sh` in the initrd. `EE_IP`/`EE_GATEWAY`/`EE_DNS` are read by the shared `ee_ifup` helper in `vendors/_lib.sh`, so they continue to work even though the PID 1 binary no longer reads them directly.
+Networking (interface up, DHCP, DNS) is handled entirely by the `ee-init` vendor stage (`image/init/src/net/` + `vendor/`) in the initramfs, before `switch_root`. `EE_IP`/`EE_GATEWAY`/`EE_DNS` are read by the shared `net::ifup` helper, so they continue to work even though the rootfs PID 1 binary never reads them directly.
 
 ## Source
 
@@ -218,20 +217,23 @@ src/
     └── tsm.rs         TDX configfs-tsm implementation
 
 image/
-├── init-templates/
-│   ├── ext4-label.sh       Root strategy: mount ext4 LABEL=root (all targets)
-│   └── vendors/
-│       ├── gcp.sh           Network + GCE IMDS `ee-config` → /run/easyenclave/env
-│       ├── azure.sh         Network + Azure IMDS `customData` → /run/easyenclave/env
-│       └── qemu.sh          Secondary config disk /agent.env → /run/easyenclave/env
-└── targets/<name>/profile.env    Declares TARGET_ROOT_STRATEGY, TARGET_VENDOR, modules, outputs
+├── init/                       Static-musl `ee-init` crate — the initramfs PID 1
+│   └── src/
+│       ├── main.rs             Boot: mounts, cmdline, modules, root, switch_root
+│       ├── modules.rs          init_module(2) in modules.dep dependency order
+│       ├── blockdev.rs         findfs LABEL=/UUID= via the ext4 superblock
+│       ├── env.rs              /run/easyenclave/env merge contract (+ unit tests)
+│       ├── net/                netlink (ip) + hand-rolled DHCP + IMDS HTTP
+│       └── vendor/             gcp / azure / qemu stages (selected by ee.vendor=)
+├── mkinitrd.sh                 Pack decompressed modules + ee-init into the cpio
+└── targets/<name>/profile.env  Declares modules, cmdline (incl. ee.vendor=), outputs
 ```
 
 ## Key decisions
 
 - **No insecure attestation fallback** — `detect()` returns error without TDX.
 - **Unix socket control plane** — clients (like dd-client) handle external control-plane networking.
-- **Vendor plumbing is image-time, not Rust-time** — networking, cloud metadata, and config-disk probing live in per-vendor shell scripts baked into the initrd. The PID 1 binary only reads `/run/easyenclave/env` and runs; it never talks to a metadata service or probes `/dev/vdb`. Adding a cloud = adding a `vendors/<name>.sh` plus a target profile, with no Rust changes.
+- **Vendor plumbing is image-time, not runtime** — networking, cloud metadata, and config-disk probing live in the static `ee-init` initramfs binary (`image/init/`), which runs before `switch_root`. The rootfs PID 1 only reads `/run/easyenclave/env` and runs; it never talks to a metadata service or probes `/dev/vdb`. Adding a cloud = adding a `vendor/<name>.rs` to ee-init plus a target profile.
 - **Workloads are static binaries from GitHub releases, or bare commands** — no container runtime.
 - **Fetch-only workloads** (`github_release` with no `cmd`) prime the bin dir for other workloads to shell out to (e.g. cloudflared).
 - **Config from JSON + env, not database** — stateless runtime.

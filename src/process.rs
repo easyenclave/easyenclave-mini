@@ -90,35 +90,35 @@ async fn spawn_inner(
     std::fs::create_dir_all(LOG_DIR).map_err(|e| format!("create log dir: {e}"))?;
     let log_file =
         std::fs::File::create(log_path(app_name)).map_err(|e| format!("open log: {e}"))?;
+
+    if tty {
+        // Real PTY (replaces `script -qfc`): the child sees a terminal, and the
+        // master gives us its combined stdout+stderr as a single stream. The
+        // command + args are exec'd directly — no intermediate shell.
+        let envs: Vec<(String, String)> = env
+            .map(|e| e.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+        let (child, master) = crate::pty::spawn_on_pty(program, args, &envs)
+            .map_err(|e| format!("spawn {program} on pty: {e}"))?;
+        let pid = child.id().unwrap_or(0);
+        eprintln!("easyenclave: spawned {program} (pid={pid}, app={app_name}, tty)");
+        let master = tokio::fs::File::from_std(master);
+        let tee = spawn_tee(master, log_file, app_name.to_string(), capture, "output");
+        return Ok(SpawnedChild {
+            child,
+            tee_handles: vec![tee],
+        });
+    }
+
     let log_clone = log_file
         .try_clone()
         .map_err(|e| format!("clone log: {e}"))?;
-
-    let mut cmd = if tty {
-        let mut c = Command::new("script");
-        c.arg("-qfc");
-        let full_cmd = std::iter::once(program)
-            .chain(args.iter().copied())
-            .collect::<Vec<_>>()
-            .join(" ");
-        c.arg(full_cmd);
-        c.arg("/dev/null");
-        c.env("TERM", "xterm-256color");
-        c
-    } else {
-        let mut c = Command::new(program);
-        c.args(args);
-        c
-    };
-
+    let mut cmd = Command::new(program);
+    cmd.args(args);
     if let Some(e) = env {
         cmd.envs(e);
     }
-    if tty {
-        cmd.env("TERM", "xterm-256color");
-    }
-
-    cmd.stdin(if tty { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -163,18 +163,11 @@ pub async fn read_logs(app_name: &str, tail: usize) -> Result<Vec<String>, Strin
     }
 }
 
-/// Kill a process by PID (SIGTERM then SIGKILL).
+/// Kill a process by PID (SIGTERM, 2s grace, then SIGKILL). Uses `libc::kill`
+/// directly instead of shelling out to the `kill` binary (busybox applet).
 pub async fn kill_process(pid: u32) -> Result<(), String> {
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .output()
-        .await;
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let _ = Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .output()
-        .await;
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
     Ok(())
 }
